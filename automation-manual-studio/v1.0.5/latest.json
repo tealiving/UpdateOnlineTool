@@ -5,12 +5,12 @@
   "version": "1.0.5",
   "mandatory": false,
   "min_supported_version": "1.0.0",
-  "published_at": "2026-05-28T10:30:00+08:00",
-  "notes": "v1.0.5 在线升级功能：支持自动检查更新、一键下载安装、超时兜底与即时用户反馈",
+  "published_at": "2026-05-28T15:00:00+08:00",
+  "notes": "v1.0.5 在线升级功能：支持自动检查更新、超时兜底与即时用户反馈，修复打包后 _internal/ 目录下 update-endpoint.json 无法找到的问题",
   "package": {
     "url": "https://github.com/tealiving/UpdateOnlineTool/raw/main/automation-manual-studio/v1.0.5/AutomationManualStudio_1.0.5.zip",
-    "size": 113517560,
-    "sha256": "66595256f18e6e4d1645d4a4744a8e33550d84755940d7ef43bc4da3c9daa1de",
+    "size": 114582771,
+    "sha256": "d4b26d5937a103400fb018deb76c0cf82f6e387ff6069631f51f1997d4635e39",
     "filename": "AutomationManualStudio_1.0.5.zip"
   }
 }
