@@ -4,3 +4,4 @@
 *.dmg
 *.AppImage
 *.tar.gz
+tmp_dl/
