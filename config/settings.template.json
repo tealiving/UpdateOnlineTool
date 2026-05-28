@@ -1,0 +1,31 @@
+{
+  "devops": {
+    "base_url": "https://devops.example.com/project/UpdateOnlineTool.git",
+    "api_token": "",
+    "raw_url_prefix": "https://devops.example.com/project/UpdateOnlineTool/raw/branch/master"
+  },
+  "github": {
+    "owner": "your-github-owner",
+    "repo": "UpdateOnlineTool",
+    "raw_url_prefix": "https://raw.githubusercontent.com/{owner}/{repo}/main",
+    "api_token": ""
+  },
+  "gitee": {
+    "owner": "",
+    "repo": "UpdateOnlineTool",
+    "raw_url_prefix": "https://gitee.com/{owner}/{repo}/raw/master",
+    "deploy_key_path": "",
+    "api_token": ""
+  },
+  "ssh": {
+    "deploy_keys": []
+  },
+  "user": {
+    "name": "",
+    "email": ""
+  },
+  "publish": {
+    "default_channel": "stable",
+    "default_minimum_version": "1.0.0"
+  }
+}
