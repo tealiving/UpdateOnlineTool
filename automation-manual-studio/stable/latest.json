@@ -8,9 +8,9 @@
   "published_at": "2026-05-28T16:30:00+08:00",
   "notes": "v1.0.5 修复 _internal/ 路径问题，支持私有仓库 token 认证",
   "package": {
-    "url": "https://github.com/tealiving/UpdateOnlineTool/releases/download/v1.0.5/AutomationManualStudio_1.0.5.zip",
-    "size": 114597138,
-    "sha256": "e56f55495c693401f5cb08777bba070af79fbc9afb8c03fdcf66e5a24dfc191a",
+    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/431917437",
+    "size": 114634045,
+    "sha256": "e77ef7605acf790bcf0a763dd29fbd0f68df7db5242d968baa8a4f9655b8de3e",
     "filename": "AutomationManualStudio_1.0.5.zip"
   }
 }
