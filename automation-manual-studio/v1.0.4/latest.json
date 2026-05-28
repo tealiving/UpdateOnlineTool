@@ -5,10 +5,10 @@
   "version": "1.0.4",
   "mandatory": false,
   "min_supported_version": "1.0.0",
-  "published_at": "2026-05-28T15:30:00+08:00",
+  "published_at": "2026-05-28T16:30:00+08:00",
   "notes": "v1.0.4 在线升级功能：支持自动检查更新、超时兜底与即时用户反馈",
   "package": {
-    "url": "https://github.com/tealiving/UpdateOnlineTool/raw/main/automation-manual-studio/v1.0.4/AutomationManualStudio_1.0.4.zip",
+    "url": "https://github.com/tealiving/UpdateOnlineTool/releases/download/v1.0.4/AutomationManualStudio_1.0.4.zip",
     "size": 114598262,
     "sha256": "2cb1f94033c453c3576a3e90327bbef564fd30732abfba5eb0b0d74491f22564",
     "filename": "AutomationManualStudio_1.0.4.zip"
