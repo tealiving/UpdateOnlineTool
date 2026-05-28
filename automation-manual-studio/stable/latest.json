@@ -9,8 +9,8 @@
   "notes": "v1.0.5 在线升级功能：支持自动检查更新、一键下载安装、超时兜底与即时用户反馈",
   "package": {
     "url": "https://github.com/tealiving/UpdateOnlineTool/raw/main/automation-manual-studio/v1.0.5/AutomationManualStudio_1.0.5.zip",
-    "size": 112182855,
-    "sha256": "a30ab3d114032d18ab5724877d8e42783aa5c55801421d75a3082ecc24d2b8c2",
+    "size": 112179349,
+    "sha256": "06482cbc2a53f79529dc77d0c8404ef9b9f81c7c30a2f567f457990d8c3f9848",
     "filename": "AutomationManualStudio_1.0.5.zip"
   }
 }
