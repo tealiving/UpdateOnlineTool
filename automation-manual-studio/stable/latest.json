@@ -1,15 +1,16 @@
 {
+  "schema_version": 2,
   "app_id": "automation-manual-studio",
   "channel": "stable",
   "version": "1.0.5",
-  "release_notes": "v1.0.5 在线升级功能：支持自动检查更新、一键下载安装、超时兜底与即时用户反馈",
-  "minimum_version": "1.0.0",
-  "released_at": "2026-05-28T10:30:00+08:00",
+  "mandatory": false,
+  "min_supported_version": "1.0.0",
+  "published_at": "2026-05-28T10:30:00+08:00",
+  "notes": "v1.0.5 在线升级功能：支持自动检查更新、一键下载安装、超时兜底与即时用户反馈",
   "package": {
-    "url": "file://D:/tealiving/peoject/UpdateOnlineTool/automation-manual-studio/v1.0.5/AutomationManualStudio_1.0.5.zip",
-    "size": 113514780,
-    "sha256": "d6749584c2c014848e11cb75c5c6216e011c85a895e0358f38c91e1e90a0d0b4",
+    "url": "https://github.com/tealiving/UpdateOnlineTool/raw/main/automation-manual-studio/v1.0.5/AutomationManualStudio_1.0.5.zip",
+    "size": 112182855,
+    "sha256": "a30ab3d114032d18ab5724877d8e42783aa5c55801421d75a3082ecc24d2b8c2",
     "filename": "AutomationManualStudio_1.0.5.zip"
-  },
-  "signature": {}
+  }
 }
