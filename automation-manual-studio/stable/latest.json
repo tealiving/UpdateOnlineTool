@@ -5,12 +5,12 @@
   "version": "1.0.5",
   "mandatory": false,
   "min_supported_version": "1.0.0",
-  "published_at": "2026-05-28T16:30:00+08:00",
-  "notes": "v1.0.5 修复 _internal/ 路径问题，支持私有仓库 token 认证",
+  "published_at": "2026-05-28T17:00:00+08:00",
+  "notes": "v1.0.5 修复 _internal/ 路径与 install_root 问题",
   "package": {
-    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/431917437",
-    "size": 114634045,
-    "sha256": "e77ef7605acf790bcf0a763dd29fbd0f68df7db5242d968baa8a4f9655b8de3e",
+    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/431935599",
+    "size": 114651913,
+    "sha256": "ec48f103ad47692884639b995633c5465b083e8c5163afec14926db2101023a7",
     "filename": "AutomationManualStudio_1.0.5.zip"
   }
 }
