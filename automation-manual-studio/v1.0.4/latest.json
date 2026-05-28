@@ -1,15 +1,16 @@
 {
+  "schema_version": 2,
   "app_id": "automation-manual-studio",
   "channel": "stable",
   "version": "1.0.4",
-  "release_notes": "v1.0.4 端子定义聚合输出与手册图片预览优化",
-  "minimum_version": "1.0.0",
-  "released_at": "2026-05-26T09:00:00+08:00",
+  "mandatory": false,
+  "min_supported_version": "1.0.0",
+  "published_at": "2026-05-28T10:30:00+08:00",
+  "notes": "v1.0.4 在线升级功能：支持自动检查更新、超时兜底与即时用户反馈",
   "package": {
-    "url": "file:///D:/tealiving/peoject/UpdateOnlineTool/automation-manual-studio/v1.0.4/AutomationManualStudio_1.0.4.zip",
-    "size": 0,
-    "sha256": "",
+    "url": "https://github.com/tealiving/UpdateOnlineTool/raw/main/automation-manual-studio/v1.0.4/AutomationManualStudio_1.0.4.zip",
+    "size": 113520147,
+    "sha256": "ea99b8c46645fe9cd7934f2e1f7d810b84425d9e95280ad108c3733733a9fce6",
     "filename": "AutomationManualStudio_1.0.4.zip"
-  },
-  "signature": {}
+  }
 }
