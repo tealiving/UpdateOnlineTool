@@ -1,7 +1,7 @@
 {
   "devops": {
     "base_url": "https://devops.byd.com/QCSHFW/jishugongchengbu/UpdateOnlineTool.git",
-    "api_token": "ZjhkYmViNDgtYTA0ZS00N2IzLWI5NjktMzUzMzEyZTQ3OGRk",
+    "api_token": "",
     "raw_url_prefix": "https://devops.byd.com/QCSHFW/jishugongchengbu/UpdateOnlineTool/raw/branch/master"
   },
   "github": {
@@ -9,7 +9,7 @@
     "repo": "UpdateOnlineTool",
     "raw_url_prefix": "https://raw.githubusercontent.com/{owner}/{repo}/main",
     "deploy_key_path": "",
-    "api_token": "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"
+    "api_token": ""
   },
   "gitee": {
     "owner": "tealiving",

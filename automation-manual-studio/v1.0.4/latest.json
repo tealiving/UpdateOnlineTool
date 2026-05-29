@@ -8,9 +8,9 @@
   "published_at": "2026-05-28T18:00:00+08:00",
   "notes": "v1.0.4 在线升级功能",
   "package": {
-    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/431959382",
-    "size": 114697154,
-    "sha256": "f8e911539e3ddecc8ed796f0f8416fac034f452b28cb0b3d11df3d2e7d0bea1e",
+    "url": "file:///D:/tealiving/peoject/UpdateOnlineTool/automation-manual-studio/v1.0.4/AutomationManualStudio_1.0.4.zip",
+    "size": 114620895,
+    "sha256": "2b9cb97d171610e0e2433f295bf629517aa01b98b36709bb69a3e79c186c1899",
     "filename": "AutomationManualStudio_1.0.4.zip"
   }
 }

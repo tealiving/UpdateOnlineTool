@@ -5,12 +5,12 @@
   "version": "1.0.5",
   "mandatory": false,
   "min_supported_version": "1.0.0",
-  "published_at": "2026-05-28T18:00:00+08:00",
-  "notes": "v1.0.5 修复 install_root、updater 路径、dataclass、platform 导入问题",
+  "published_at": "2026-05-29T14:00:00+08:00",
+  "notes": "v1.0.5 在线升级：断点续传、自动重试、跳过版本后台检查、弹窗关闭修复",
   "package": {
-    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/431964268",
-    "size": 114697021,
-    "sha256": "e7928a0626feb818716683598ac8bc992a668652a01120322169d2efef61b642",
+    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/432783555",
+    "size": 110902997,
+    "sha256": "7d849007e999046718968ca2e88a42a59e06bda769b69f1453f5e620834b9155",
     "filename": "AutomationManualStudio_1.0.5.zip"
   }
 }
