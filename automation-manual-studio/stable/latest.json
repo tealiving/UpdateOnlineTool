@@ -8,9 +8,9 @@
   "published_at": "2026-05-29T16:30:00+08:00",
   "notes": "v1.0.5 全面远程化：移除所有本地路径，manifest/package URL 统一使用 GitHub 远程地址",
   "package": {
-    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/432863160",
-    "size": 110902564,
-    "sha256": "fc0c30200e3befae000cbf264822e48be2e4a6b1f44f30b014803a4d5416f272",
+    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/432910205",
+    "size": 115194136,
+    "sha256": "056a0a42bb9e3a4a595707e6d63527cc236f1de5dea6a6f45926cb95896450bb",
     "filename": "AutomationManualStudio_1.0.5.zip"
   }
 }
