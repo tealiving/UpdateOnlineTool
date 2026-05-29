@@ -5,12 +5,12 @@
   "version": "1.0.5",
   "mandatory": false,
   "min_supported_version": "1.0.0",
-  "published_at": "2026-05-29T15:50:00+08:00",
-  "notes": "v1.0.5 exe 名称统一为 AutomationManualStudio.exe、launcher 分离、断点续传与自动重试",
+  "published_at": "2026-05-29T16:30:00+08:00",
+  "notes": "v1.0.5 全面远程化：移除所有本地路径，manifest/package URL 统一使用 GitHub 远程地址",
   "package": {
-    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/432839234",
-    "size": 110901956,
-    "sha256": "99a3d491ec827ab5427e6745ada4cac113f4a15aaf2350e530bfb9525c2437fb",
+    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/432863160",
+    "size": 110902564,
+    "sha256": "fc0c30200e3befae000cbf264822e48be2e4a6b1f44f30b014803a4d5416f272",
     "filename": "AutomationManualStudio_1.0.5.zip"
   }
 }
