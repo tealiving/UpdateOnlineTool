@@ -6,9 +6,9 @@
   "mandatory": false,
   "min_supported_version": "1.0.0",
   "published_at": "2026-06-01T03:32:57.857738+00:00",
-  "notes": "v1.0.5 多源+回滚安装+相对URL(Gitee)+Release下载(GitHub)",
+  "notes": "v1.0.5 多源+回滚安装+API asset URL(私有仓库兼容)",
   "package": {
-    "url": "https://github.com/tealiving/UpdateOnlineTool/releases/download/v1.0.5/package.zip",
+    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/434905874",
     "size": 123407934,
     "sha256": "6816650b4fc845bc3654c6125bebe2a6fc32c16128d21f53ff68de47e1eae112"
   }
