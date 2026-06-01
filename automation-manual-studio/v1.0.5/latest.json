@@ -5,11 +5,11 @@
   "version": "1.0.5",
   "mandatory": false,
   "min_supported_version": "1.0.0",
-  "published_at": "2026-06-01T03:32:57.857738+00:00",
-  "notes": "v1.0.5 多源+相对URL+回滚安装",
+  "published_at": "2026-06-01T09:09:26.904425+00:00",
+  "notes": "v1.0.5 修复在线升级进程切换5个根因 + http_headers Bearer token + update-endpoint路径 + namespace package hiddenimports",
   "package": {
     "url": "automation-manual-studio/v1.0.5/package.zip",
-    "size": 123407934,
-    "sha256": "6816650b4fc845bc3654c6125bebe2a6fc32c16128d21f53ff68de47e1eae112"
+    "size": 113846490,
+    "sha256": "fa297ec0a7e02981538c64cde5329acceb2c59c0d0ac644b714dcca6b4217622"
   }
 }
