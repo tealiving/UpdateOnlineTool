@@ -1,7 +1,11 @@
 """UpdateOnlineTool release publisher.
 
-:param argv: Command line arguments.
-:return: Process exit code.
+约定：
+  * 包统一重命名为 ``package.zip`` 后入库到 ``<app-id>/v<version>/package.zip``。
+  * ``latest.json`` 中 ``package.url`` 写入相对路径，客户端按 endpoint 的
+    ``package_url_prefix`` 自行拼接绝对 URL，因此 manifest 在
+    GitHub/Gitee/DevOps 多源完全通用。
+  * 如显式 ``--url-prefix`` 给定，则写入绝对 URL（向后兼容）。
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PACKAGE_FILENAME = "package.zip"
 
 
 def sha256_of(path: Path) -> str:
@@ -29,19 +34,20 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build_package_url(*, url_prefix: str, app: str, version: str, filename: str, package_path: Path) -> str:
+def build_package_url(*, url_prefix: str, app: str, version: str) -> str:
     """Build the package URL written to manifest.
 
-    :param url_prefix: Optional HTTP/file URL prefix.
+    若 ``url_prefix`` 非空则生成绝对 URL；否则写入相对路径，由客户端拼接。
+
+    :param url_prefix: 可选的 URL 前缀。
     :param app: Application id.
     :param version: Release version.
-    :param filename: Package filename.
-    :param package_path: Local copied package path.
-    :return: Package URL.
+    :return: Package URL or relative path.
     """
+    relative_path = f"{app}/v{version}/{PACKAGE_FILENAME}"
     if url_prefix:
-        return f"{url_prefix.rstrip('/')}/{app}/v{version}/{filename}"
-    return package_path.resolve().as_uri()
+        return f"{url_prefix.rstrip('/')}/{relative_path}"
+    return relative_path
 
 
 def write_manifest(path: Path, payload: dict[str, object]) -> None:
@@ -68,7 +74,11 @@ def main() -> None:
     parser.add_argument("--notes", default="", help="Release notes.")
     parser.add_argument("--min-supported-version", default="1.0.0", help="Minimum supported current version.")
     parser.add_argument("--mandatory", action="store_true", help="Mark this update as mandatory.")
-    parser.add_argument("--url-prefix", default="", help="Download URL prefix. Defaults to local file:// URL.")
+    parser.add_argument(
+        "--url-prefix",
+        default="",
+        help="Optional absolute URL prefix. If empty, manifest stores a relative path（推荐）。",
+    )
     parser.add_argument("--published-at", default="", help="ISO timestamp. Defaults to current UTC time.")
     args = parser.parse_args()
 
@@ -82,7 +92,7 @@ def main() -> None:
     version_dir.mkdir(parents=True, exist_ok=True)
     channel_dir.mkdir(parents=True, exist_ok=True)
 
-    copied_package_path = version_dir / source_package_path.name
+    copied_package_path = version_dir / PACKAGE_FILENAME
     if source_package_path != copied_package_path.resolve():
         shutil.copy2(source_package_path, copied_package_path)
 
@@ -92,8 +102,6 @@ def main() -> None:
         url_prefix=str(args.url_prefix),
         app=str(args.app),
         version=str(args.version),
-        filename=source_package_path.name,
-        package_path=copied_package_path,
     )
     published_at = str(args.published_at).strip() or datetime.now(timezone.utc).isoformat()
 
@@ -110,7 +118,6 @@ def main() -> None:
             "url": package_url,
             "size": file_size,
             "sha256": file_sha256,
-            "filename": source_package_path.name,
         },
     }
 
