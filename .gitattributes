@@ -1,1 +1,2 @@
 automation-manual-studio/**/*.zip filter=lfs diff=lfs merge=lfs -text
+automation-manual-studio/**/*.exe filter=lfs diff=lfs merge=lfs -text

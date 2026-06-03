@@ -8,7 +8,7 @@
   "published_at": "2026-06-01T09:16:47.936727+00:00",
   "notes": "v1.0.5 修复在线升级进程切换5个根因 + http_headers Bearer token + update-endpoint路径 + namespace package hiddenimports",
   "package": {
-    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/435116480",
+    "url": "automation-manual-studio/v1.0.5/package.zip",
     "size": 113846490,
     "sha256": "fa297ec0a7e02981538c64cde5329acceb2c59c0d0ac644b714dcca6b4217622"
   }

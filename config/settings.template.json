@@ -2,12 +2,14 @@
   "devops": {
     "base_url": "https://devops.example.com/project/UpdateOnlineTool.git",
     "api_token": "",
+    "ifw_username": "",
     "raw_url_prefix": "https://devops.example.com/project/UpdateOnlineTool/raw/branch/master"
   },
   "github": {
     "owner": "your-github-owner",
     "repo": "UpdateOnlineTool",
     "raw_url_prefix": "https://raw.githubusercontent.com/{owner}/{repo}/main",
+    "ifw_username": "your-github-owner",
     "api_token": ""
   },
   "gitee": {
@@ -15,6 +17,7 @@
     "repo": "UpdateOnlineTool",
     "raw_url_prefix": "https://gitee.com/{owner}/{repo}/raw/master",
     "deploy_key_path": "",
+    "ifw_username": "",
     "api_token": ""
   },
   "ssh": {

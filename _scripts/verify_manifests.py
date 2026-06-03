@@ -12,6 +12,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib import parse, request
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REQUIRED_MANIFEST_KEYS = {
@@ -25,7 +26,8 @@ REQUIRED_MANIFEST_KEYS = {
     "notes",
     "package",
 }
-REQUIRED_PACKAGE_KEYS = {"url", "size", "sha256", "filename"}
+REQUIRED_PACKAGE_KEYS = {"url", "size", "sha256"}
+VALID_INSTALLER_KINDS = {"custom_updater", "qt_ifw"}
 
 
 def sha256_of(path: Path) -> str:
@@ -53,10 +55,11 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
-def verify_manifest(path: Path) -> list[str]:
+def verify_manifest(path: Path, *, root: Path = REPO_ROOT) -> list[str]:
     """Verify one manifest against its package when the package is local.
 
     :param path: Manifest path.
+    :param root: Repository root used to resolve relative package URLs.
     :return: Error messages.
     """
     errors: list[str] = []
@@ -71,15 +74,13 @@ def verify_manifest(path: Path) -> list[str]:
     if missing_package_keys:
         errors.append(f"{path}: package missing keys: {', '.join(missing_package_keys)}")
 
-    filename = str(package.get("filename", "")).strip()
-    if not filename:
+    errors.extend(verify_installer_contract(path, payload))
+
+    package_path = resolve_local_package_path(package_url=str(package.get("url", "")).strip(), root=root)
+    if package_path is None:
         return errors
-    package_path = path.parent / filename
-    if not package_path.exists() and path.parent.name in {"stable", "beta", "nightly"}:
-        version = str(payload.get("version", "")).strip()
-        package_path = path.parent.parent / f"v{version}" / filename
     if not package_path.exists():
-        errors.append(f"{path}: local package not found: {filename}")
+        errors.append(f"{path}: local package not found: {package_path}")
         return errors
 
     expected_size = package.get("size")
@@ -92,6 +93,50 @@ def verify_manifest(path: Path) -> list[str]:
     if expected_sha256 != actual_sha256:
         errors.append(f"{path}: package.sha256 {expected_sha256} != actual {actual_sha256}")
     return errors
+
+
+def verify_installer_contract(path: Path, payload: dict[str, Any]) -> list[str]:
+    """Verify optional installer contract fields.
+
+    :param path: Manifest path.
+    :param payload: Manifest payload.
+    :return: Error messages.
+    """
+    errors: list[str] = []
+    installer_kind = payload.get("installer_kind")
+    if installer_kind is not None and installer_kind not in VALID_INSTALLER_KINDS:
+        errors.append(f"{path}: installer_kind must be one of: {', '.join(sorted(VALID_INSTALLER_KINDS))}")
+
+    repository_url = payload.get("repository_url")
+    if repository_url is None:
+        return errors
+    if not isinstance(repository_url, str) or not repository_url.strip():
+        errors.append(f"{path}: repository_url must be a non-empty string")
+        return errors
+    parsed = parse.urlparse(repository_url.strip())
+    if parsed.scheme not in {"https", "file"}:
+        errors.append(f"{path}: repository_url must use https or file scheme")
+    return errors
+
+
+def resolve_local_package_path(*, package_url: str, root: Path) -> Path | None:
+    """Resolve a package URL to a local file path when possible.
+
+    :param package_url: Package URL from manifest.
+    :param root: Repository root used for relative package URLs.
+    :return: Local package path, or None for remote URLs.
+    """
+    if not package_url:
+        return None
+    parsed = parse.urlparse(package_url)
+    if parsed.scheme == "file":
+        return Path(request.url2pathname(parsed.path))
+    if parsed.scheme:
+        return None
+    relative_path = Path(package_url)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        return None
+    return Path(root) / relative_path
 
 
 def iter_manifest_paths(root: Path, app: str | None) -> list[Path]:

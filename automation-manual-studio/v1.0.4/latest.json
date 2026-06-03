@@ -8,9 +8,8 @@
   "published_at": "2026-05-29T16:30:00+08:00",
   "notes": "v1.0.4 全面远程化：移除所有本地路径",
   "package": {
-    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/432935172",
-    "size": 115206832,
-    "sha256": "d8bcb4b6f1ad0ba2a7e3ddb16859e9aa250264d4639c22d5c465f9249b08ce9b",
-    "filename": "AutomationManualStudio_1.0.4.zip"
+    "url": "automation-manual-studio/v1.0.4/AutomationManualStudio_1.0.4.zip",
+    "size": 114620895,
+    "sha256": "2b9cb97d171610e0e2433f295bf629517aa01b98b36709bb69a3e79c186c1899"
   }
 }

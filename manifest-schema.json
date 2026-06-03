@@ -1,74 +1,98 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://update-online-tool.schema/manifest/v1",
-  "title": "UpdateOnlineTool Manifest",
-  "description": "跨框架应用更新 manifest 通用规范，兼容 PyQt / Rust / Electron 等",
+  "$id": "https://update-online-tool.schema/manifest/v2",
+  "title": "UpdateOnlineTool Manifest v2",
+  "description": "AutomationManual 在线升级 manifest 契约，支持外网 HTTPS 与内网 file/相对路径源",
   "type": "object",
-  "required": ["app_id", "channel", "version", "package"],
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "app_id",
+    "channel",
+    "version",
+    "mandatory",
+    "min_supported_version",
+    "published_at",
+    "notes",
+    "package"
+  ],
   "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
     "app_id": {
       "type": "string",
-      "description": "项目唯一标识，对应仓库子目录名",
-      "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$"
+      "const": "automation-manual-studio"
     },
     "channel": {
       "type": "string",
-      "enum": ["stable", "beta", "nightly"],
-      "description": "发布通道"
+      "enum": ["stable", "beta", "nightly"]
     },
     "version": {
       "type": "string",
-      "description": "语义化版本号",
-      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+"
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-.+][0-9A-Za-z.-]+)?$"
     },
-    "release_notes": {
-      "type": "string",
-      "description": "版本变更说明"
+    "mandatory": {
+      "type": "boolean"
     },
-    "minimum_version": {
-      "type": "string",
-      "description": "可增量升级的最低版本，低于此版本需全量安装"
+    "min_supported_version": {
+      "type": "string"
     },
-    "released_at": {
+    "published_at": {
       "type": "string",
-      "format": "date-time",
-      "description": "发布时间 ISO 8601"
+      "format": "date-time"
+    },
+    "notes": {
+      "type": "string"
     },
     "package": {
       "type": "object",
-      "required": ["url", "sha256", "filename"],
+      "additionalProperties": false,
+      "required": ["url", "size", "sha256"],
       "properties": {
         "url": {
           "type": "string",
-          "description": "下载地址，支持 file:// / https:// / http://",
-          "format": "uri"
+          "description": "HTTPS URL、file URL 或不含 .. 的仓库相对路径"
         },
         "size": {
           "type": "integer",
-          "description": "文件字节数"
+          "minimum": 1
         },
         "sha256": {
           "type": "string",
-          "description": "SHA-256 校验值",
           "pattern": "^[a-fA-F0-9]{64}$"
         },
-        "filename": {
+        "signature_url": {
           "type": "string",
-          "description": "文件名"
+          "description": "可选 detached signature URL 或相对路径"
         }
       }
     },
-    "signature": {
-      "type": "object",
-      "description": "可选的数字签名，企业级发布时使用",
-      "properties": {
-        "algorithm": { "type": "string" },
-        "value": { "type": "string" }
-      }
+    "installer_kind": {
+      "type": "string",
+      "enum": ["custom_updater", "qt_ifw"],
+      "description": "可选安装器类型；迁移期旧客户端可忽略"
     },
-    "extra": {
+    "repository_url": {
+      "type": "string",
+      "description": "Qt IFW repository URL，支持 https:// 或 file://"
+    },
+    "rollout": {
       "type": "object",
-      "description": "框架扩展字段，各项目自定义"
+      "additionalProperties": false,
+      "required": ["percentage", "cohort_salt"],
+      "properties": {
+        "percentage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "cohort_salt": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }
