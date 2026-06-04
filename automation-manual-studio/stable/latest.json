@@ -5,13 +5,11 @@
   "version": "1.0.5",
   "mandatory": false,
   "min_supported_version": "1.0.0",
-  "published_at": "2026-06-01T09:16:47.936727+00:00",
-  "notes": "v1.0.5 修复在线升级进程切换5个根因 + http_headers Bearer token + update-endpoint路径 + namespace package hiddenimports",
+  "published_at": "2026-06-04T07:41:45.585522+00:00",
+  "notes": "v1.0.5 test rebuild: launcher layout + private update settings injection",
   "package": {
     "url": "automation-manual-studio/v1.0.5/package.zip",
-    "size": 113846490,
-    "sha256": "fa297ec0a7e02981538c64cde5329acceb2c59c0d0ac644b714dcca6b4217622"
-  },
-  "installer_kind": "qt_ifw",
-  "repository_url": "https://raw.githubusercontent.com/tealiving/UpdateOnlineTool/main/automation-manual-studio/stable/ifw-repository"
+    "size": 123425068,
+    "sha256": "3b35171e3c63c99eaca715c7b39114632614d6a2685d7c3c21b5e1ffa5945ba7"
+  }
 }
