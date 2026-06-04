@@ -8,7 +8,7 @@
   "published_at": "2026-06-04T07:41:45.585522+00:00",
   "notes": "v1.0.5 test rebuild: launcher layout + private update settings injection",
   "package": {
-    "url": "automation-manual-studio/v1.0.5/package.zip",
+    "url": "https://api.github.com/repos/tealiving/UpdateOnlineTool/releases/assets/438067009",
     "size": 123425068,
     "sha256": "3b35171e3c63c99eaca715c7b39114632614d6a2685d7c3c21b5e1ffa5945ba7"
   }
