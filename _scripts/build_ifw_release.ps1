@@ -58,7 +58,7 @@ try {
     $appVersion = (rtk proxy python -c "from app.application.api.version import APP_VERSION; print(APP_VERSION)").Trim()
     $distDir = "dist\AutomationManualStudio_release_v$appVersion"
 
-    rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File tools\ifw\Build-IfwPackageTree.ps1 -DistDir $distDir
+    rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File tools\ifw\Build-IfwPackageTree.ps1 -DistDir $distDir -SettingsFile $settingsFullPath
     rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File tools\ifw\Build-IfwRepository.ps1 -IfwRoot $IfwRoot
     rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File tools\ifw\New-IfwResolvedConfig.ps1 -SourceConfig installer\ifw\config\config.external.xml -OutputConfig $externalConfig -SettingsFile $settingsFullPath -Provider $ExternalProvider -Channel $Channel
     rtk proxy powershell -NoProfile -ExecutionPolicy Bypass -File tools\ifw\New-IfwResolvedConfig.ps1 -SourceConfig installer\ifw\config\config.internal.xml -OutputConfig $internalConfig -SettingsFile $settingsFullPath -Provider $InternalProvider -Channel $Channel
