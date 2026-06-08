@@ -1,34 +1,13 @@
 {
-  "devops": {
-    "base_url": "https://devops.example.com/project/UpdateOnlineTool.git",
-    "api_token": "",
-    "ifw_username": "",
-    "raw_url_prefix": "https://devops.example.com/project/UpdateOnlineTool/raw/branch/master"
-  },
-  "github": {
-    "owner": "your-github-owner",
-    "repo": "UpdateOnlineTool",
-    "raw_url_prefix": "https://raw.githubusercontent.com/{owner}/{repo}/main",
-    "ifw_username": "your-github-owner",
-    "api_token": ""
-  },
-  "gitee": {
-    "owner": "",
-    "repo": "UpdateOnlineTool",
-    "raw_url_prefix": "https://gitee.com/{owner}/{repo}/raw/master",
-    "deploy_key_path": "",
-    "ifw_username": "",
-    "api_token": ""
-  },
-  "ssh": {
-    "deploy_keys": []
-  },
-  "user": {
-    "name": "",
-    "email": ""
+  "nas": {
+    "root": "\\\\nas-server\\release-share\\UpdateOnlineTool"
   },
   "publish": {
     "default_channel": "stable",
-    "default_minimum_version": "1.0.0"
+    "default_minimum_version": "1.0.0",
+    "package_filename": "package.zip"
+  },
+  "updater": {
+    "executable_name": "AutomationManualUpdater.exe"
   }
 }

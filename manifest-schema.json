@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://update-online-tool.schema/manifest/v2",
   "title": "UpdateOnlineTool Manifest v2",
-  "description": "AutomationManual 在线升级 manifest 契约，支持外网 HTTPS 与内网 file/相对路径源",
+  "description": "NAS-only online update manifest contract for PyQt tools",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,7 +23,7 @@
     },
     "app_id": {
       "type": "string",
-      "const": "automation-manual-studio"
+      "minLength": 1
     },
     "channel": {
       "type": "string",
@@ -37,7 +37,8 @@
       "type": "boolean"
     },
     "min_supported_version": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1
     },
     "published_at": {
       "type": "string",
@@ -53,7 +54,8 @@
       "properties": {
         "url": {
           "type": "string",
-          "description": "HTTPS URL、file URL 或不含 .. 的仓库相对路径"
+          "minLength": 1,
+          "description": "NAS-root-relative package path without parent traversal"
         },
         "size": {
           "type": "integer",
@@ -62,35 +64,6 @@
         "sha256": {
           "type": "string",
           "pattern": "^[a-fA-F0-9]{64}$"
-        },
-        "signature_url": {
-          "type": "string",
-          "description": "可选 detached signature URL 或相对路径"
-        }
-      }
-    },
-    "installer_kind": {
-      "type": "string",
-      "enum": ["custom_updater", "qt_ifw"],
-      "description": "可选安装器类型；迁移期旧客户端可忽略"
-    },
-    "repository_url": {
-      "type": "string",
-      "description": "Qt IFW repository URL，支持 https:// 或 file://"
-    },
-    "rollout": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["percentage", "cohort_salt"],
-      "properties": {
-        "percentage": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 100
-        },
-        "cohort_salt": {
-          "type": "string",
-          "minLength": 1
         }
       }
     }
