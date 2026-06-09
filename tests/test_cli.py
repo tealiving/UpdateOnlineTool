@@ -95,3 +95,45 @@ def test_cli_verify_accepts_published_release(tmp_path: Path) -> None:
     )
 
     assert main(["verify", "--settings", str(settings_path), "--app", "automation-manual-studio"]) == 0
+
+
+def test_cli_init_writes_project_update_endpoint(tmp_path: Path) -> None:
+    """验证 init 生成接入方项目配置文件。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None
+    """
+    output = tmp_path / "update-endpoint.json"
+
+    exit_code = main(["init", "--app", "my-tool", "--output", str(output)])
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert payload == {
+        "channel": "stable",
+        "installer_mode": "custom_updater",
+        "manifest_sources": [
+            {
+                "name": "local-nas",
+                "manifest_url": "uot-nas://my-tool/stable",
+                "package_url_prefix": "uot-nas://nas",
+                "auth_provider": "update_online_tool",
+                "priority": 10,
+            }
+        ],
+    }
+
+
+def test_cli_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
+    """验证 init 默认不覆盖已有文件。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None
+    """
+    output = tmp_path / "update-endpoint.json"
+    output.write_text("{}", encoding="utf-8")
+
+    exit_code = main(["init", "--app", "my-tool", "--output", str(output)])
+
+    assert exit_code == 1
+    assert output.read_text(encoding="utf-8") == "{}"

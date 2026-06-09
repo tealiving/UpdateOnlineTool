@@ -1,24 +1,24 @@
-# PyQt Integration Guide
+# PyQt 集成指南
 
-The GUI project owns UI only:
+GUI 项目只负责界面：
 
-- update button
-- update dialog
-- progress bar
-- cancel button
-- QThread worker
-- user-facing messages
+- 更新按钮。
+- 更新对话框。
+- 进度条。
+- 取消按钮。
+- QThread worker。
+- 用户可见提示。
 
-`update_online_tool` owns backend update behavior:
+`update_online_tool` 负责后端在线升级行为：
 
-- read NAS manifest
-- decide update availability
-- copy package
-- verify size and sha256
-- write pending manifest
-- launch standalone updater
+- 读取 NAS manifest。
+- 判断是否有可用更新。
+- 复制升级包。
+- 校验包体大小和 SHA-256。
+- 写入 pending manifest。
+- 启动独立 updater。
 
-GUI projects should call SDK methods from worker threads. The SDK does not import PyQt.
+GUI 项目应在线程中调用 SDK 方法。SDK 本身不导入 PyQt。
 
 ```python
 from update_online_tool import UpdateService
@@ -67,9 +67,74 @@ class PrepareUpdateWorker:
         self.progress.emit(percent)
 ```
 
-Suggested GUI boundary:
+建议 GUI 边界：
 
-- `check` button calls `UpdateService.check()` in a lightweight worker.
-- `update` button calls `UpdateService.prepare()` in a cancellable worker.
-- after prepare completes, GUI calls `UpdateService.launch()` and exits the app.
-- GUI displays `UpdateError.code.value` and `UpdateError.message` instead of parsing exception text.
+- `检查更新` 按钮在轻量 worker 中调用 `UpdateService.check()`。
+- `立即更新` 按钮在可取消 worker 中调用 `UpdateService.prepare()`。
+- `prepare()` 完成后，GUI 调用启动 updater 的 SDK/API，然后退出应用。
+- GUI 展示 `UpdateError.code.value` 和 `UpdateError.message`，不要解析异常文本。
+
+## 已有 PyQt updater 的接入方式
+
+如果 PyQt 工具已经拥有独立 updater 可执行文件，updater 仍保留在工具项目中；`update_online_tool.pyqt_runtime` 只负责写交接文件和启动进程。
+
+```python
+from update_online_tool.pyqt_runtime import (
+    PyQtPendingUpdateRequest,
+    launch_existing_pending,
+    write_pyqt_pending_manifest,
+)
+```
+
+交接流程：
+
+1. GUI 通过 `UpdateService.check()` 或项目适配器检查 NAS manifest。
+2. GUI 通过 `UpdateService.prepare()` 或项目适配器准备升级包。
+3. GUI 使用 `write_pyqt_pending_manifest()` 写入 `pending-update.json`。
+4. GUI 使用 `launch_existing_pending()` 启动工具项目自己的 updater。
+5. GUI 退出。
+6. 工具项目的 updater 等待旧 PID，安装文件，切换 `current.json`，再由 launcher 打开新 GUI。
+
+`launch_existing_pending()` 启动的命令形态：
+
+```text
+<updater_executable> --pending <pending-update.json>
+```
+
+它本身不执行文件安装。
+
+## 通用项目示例
+
+某个工具项目可以使用以下 endpoint 值：
+
+```json
+{
+  "manifest_url": "uot-nas://my-tool/stable",
+  "package_url_prefix": "uot-nas://nas",
+  "auth_provider": "update_online_tool"
+}
+```
+
+接入方项目的包体组装脚本可以把默认 `settings.json` 复制到 PyInstaller 运行时目录：
+
+```text
+_internal/config/settings.json
+```
+
+应用适配器建议按以下顺序解析 settings：
+
+1. 显式传入适配器的 settings 路径。
+2. 项目自定义环境变量，例如 `MY_TOOL_UPDATE_SETTINGS_FILE`。
+3. SDK 通用环境变量 `UPDATE_ONLINE_TOOL_SETTINGS_FILE`。
+4. 用户级配置 `%APPDATA%\my-tool\update-online-tool\settings.json`。
+5. 打包后的 `_internal/config/settings.json`。
+6. 开发兜底 `config/settings.json`。
+
+这样可以让源码目录、launcher 安装根目录和版本化 release 目录复用同一套 SDK 配置。项目自定义环境变量属于接入方项目边界，不应写死在 `update_online_tool` SDK 中。
+
+## 排障
+
+- `SETTINGS_INVALID`：接入方应用没有打包或没有指向 `settings.json`。
+- `MANIFEST_NOT_FOUND`：NAS 根目录可访问，但 `<app-id>/<channel>/latest.json` 缺失。
+- `PACKAGE_HASH_MISMATCH`：NAS 上的 package 与 manifest 不一致；重新发布并运行 `uot verify`。
+- updater 已启动但 GUI 没有重新打开：检查接入方工具自己的 updater 和 launcher 日志，而不是 SDK。

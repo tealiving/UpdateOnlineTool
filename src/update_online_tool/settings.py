@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from collections.abc import Sequence
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+
+UPDATE_SETTINGS_FILE_ENV = "UPDATE_ONLINE_TOOL_SETTINGS_FILE"
 
 
 @dataclass(frozen=True)
@@ -26,16 +31,28 @@ class UpdateToolSettings:
     default_channel: str = "stable"
     default_minimum_version: str = "1.0.0"
     package_filename: str = "package.zip"
-    updater_executable_name: str = "AutomationManualUpdater.exe"
+    updater_executable_name: str = "Updater.exe"
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "UpdateToolSettings":
+    def load(
+        cls,
+        path: Path | None = None,
+        *,
+        app_id: str = "update-online-tool",
+        bundled_paths: Sequence[Path] | None = None,
+    ) -> "UpdateToolSettings":
         """读取 settings.json。
 
-        :param path: 显式设置文件路径；为空时读取当前目录 config/settings.json。
+        :param path: 显式设置文件路径。
+        :param app_id: 接入方应用标识，用于解析用户级配置。
+        :param bundled_paths: 打包内置 settings 候选路径。
         :return: 设置模型。
         """
-        settings_path = Path(path) if path is not None else Path.cwd() / "config" / "settings.json"
+        settings_path = resolve_settings_path(
+            app_id=app_id,
+            explicit_path=path,
+            bundled_paths=bundled_paths,
+        )
         try:
             payload = json.loads(settings_path.read_text(encoding="utf-8"))
         except OSError as exc:
@@ -75,7 +92,7 @@ class UpdateToolSettings:
             updater_executable_name=_optional_text(
                 updater_payload,
                 "executable_name",
-                "AutomationManualUpdater.exe",
+                "Updater.exe",
             ),
         )
 
@@ -107,3 +124,68 @@ def _optional_text(payload: dict[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"{key} must be a non-empty string")
     return value.strip()
+
+
+def resolve_settings_path(
+    *,
+    app_id: str,
+    explicit_path: Path | None = None,
+    bundled_paths: Sequence[Path] | None = None,
+) -> Path:
+    """解析 settings.json 路径。
+
+    优先级：显式路径 > 通用环境变量 > 用户级配置 > 打包内置配置 > 开发目录兜底。
+
+    :param app_id: 接入方应用标识。
+    :param explicit_path: 显式 settings 路径。
+    :param bundled_paths: 打包内置 settings 候选路径。
+    :return: settings.json 路径。
+    """
+    if explicit_path is not None:
+        return Path(explicit_path)
+    env_path = os.getenv(UPDATE_SETTINGS_FILE_ENV, "").strip()
+    if env_path:
+        return Path(env_path)
+    user_path = user_settings_path(app_id)
+    if user_path.is_file():
+        return user_path
+    for bundled_path in bundled_paths or ():
+        candidate = Path(bundled_path)
+        if candidate.is_file():
+            return candidate
+    return Path.cwd() / "config" / "settings.json"
+
+
+def user_settings_path(app_id: str) -> Path:
+    """生成用户级 settings.json 路径。
+
+    :param app_id: 接入方应用标识。
+    :return: 用户级 settings.json 路径。
+    """
+    normalized_app_id = _normalize_app_id(app_id)
+    if os.name == "nt":
+        root = Path(os.getenv("APPDATA", "") or Path.home() / "AppData" / "Roaming")
+        return root / normalized_app_id / "update-online-tool" / "settings.json"
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / normalized_app_id
+            / "update-online-tool"
+            / "settings.json"
+        )
+    root = Path(os.getenv("XDG_CONFIG_HOME", "") or Path.home() / ".config")
+    return root / normalized_app_id / "update-online-tool" / "settings.json"
+
+
+def _normalize_app_id(app_id: str) -> str:
+    """规范化应用标识。
+
+    :param app_id: 原始应用标识。
+    :return: 非空应用标识。
+    """
+    normalized = str(app_id or "").strip()
+    if not normalized:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "app_id must be a non-empty string")
+    return normalized

@@ -8,6 +8,6 @@
     "package_filename": "package.zip"
   },
   "updater": {
-    "executable_name": "AutomationManualUpdater.exe"
+    "executable_name": "MyToolUpdater.exe"
   }
 }

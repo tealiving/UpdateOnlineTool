@@ -26,6 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "init":
+            return _init(args)
         if args.command == "publish":
             return _publish(args)
         if args.command == "verify":
@@ -46,6 +48,17 @@ def _build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(prog="uot", description="NAS online updater CLI.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    init = subparsers.add_parser("init", help="Generate a project update-endpoint.json.")
+    init.add_argument("--app", required=True, help="Application id.")
+    init.add_argument("--channel", default="stable", help="Release channel.")
+    init.add_argument("--output", default="update-endpoint.json", type=Path, help="Output endpoint JSON path.")
+    init.add_argument("--source-name", default="local-nas", help="Manifest source name.")
+    init.add_argument("--installer-mode", default="custom_updater", help="Installer mode.")
+    init.add_argument("--package-url-prefix", default="uot-nas://nas", help="Package URL prefix.")
+    init.add_argument("--auth-provider", default="update_online_tool", help="Auth provider.")
+    init.add_argument("--priority", default=10, type=int, help="Manifest source priority.")
+    init.add_argument("--force", action="store_true", help="Overwrite existing output file.")
 
     publish = subparsers.add_parser("publish", help="Publish a zip package to the NAS release root.")
     _add_settings_arg(publish)
@@ -79,6 +92,34 @@ def _add_settings_arg(parser: argparse.ArgumentParser) -> None:
     :return: None
     """
     parser.add_argument("--settings", default="", type=Path, help="settings.json path.")
+
+
+def _init(args: argparse.Namespace) -> int:
+    """生成接入方项目 update-endpoint.json。
+
+    :param args: 命令参数。
+    :return: 进程退出码。
+    """
+    output_path = Path(args.output)
+    if output_path.exists() and not args.force:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {output_path}")
+    channel = str(args.channel or "stable").strip()
+    payload = {
+        "channel": channel,
+        "installer_mode": str(args.installer_mode or "custom_updater").strip(),
+        "manifest_sources": [
+            {
+                "name": str(args.source_name or "local-nas").strip(),
+                "manifest_url": f"uot-nas://{str(args.app).strip()}/{channel}",
+                "package_url_prefix": str(args.package_url_prefix or "uot-nas://nas").strip(),
+                "auth_provider": str(args.auth_provider or "update_online_tool").strip(),
+                "priority": int(args.priority),
+            }
+        ],
+    }
+    _write_json(output_path, payload)
+    print(f"Generated {output_path}")
+    return 0
 
 
 def _publish(args: argparse.Namespace) -> int:
