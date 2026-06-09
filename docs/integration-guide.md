@@ -49,9 +49,34 @@ python -m pip install update-online-tool
 
 客户机升级时不得执行 `pip install`。接入方工具应把该依赖冻结进 PyInstaller 或等价桌面发布包中。
 
-## 4. 配置 NAS
+## 4. 初始化项目配置和 NAS 配置
 
-创建共享升级后端使用的 `settings.json`：
+推荐接入方在安装 `update-online-tool` 后执行 `uot init`，由 CLI 自动生成项目配置：
+
+```powershell
+uot init --nas-root D:\Nas
+```
+
+该命令会写入：
+
+- `update-endpoint.json`：放在工具项目内，随源码和打包产物分发，用于声明当前工具使用 NAS + `update-online-tool` + 自定义 updater。
+- 用户级 `settings.json`：保存 NAS 根路径等后端配置，Windows 默认在 `%APPDATA%\my-tool\update-online-tool\settings.json`。
+
+`--app` 可选；不传时自动读取当前工作目录名作为应用标识。`--output` 可选；不传时默认生成当前目录的 `update-endpoint.json`。因此在工具项目根目录执行时，最小命令就是 `uot init --nas-root D:\Nas`。
+
+如果只需要生成项目内 endpoint，不想同时写入 settings，可以省略 `--nas-root`：
+
+```powershell
+uot init
+```
+
+如果打包脚本需要生成内置默认 settings，可以指定输出路径：
+
+```powershell
+uot init --app my-tool --output update-endpoint.json --nas-root D:\Nas --settings-output config\settings.json
+```
+
+手动创建共享升级后端使用的 `settings.json` 仍然支持，文件结构如下：
 
 ```json
 {
@@ -96,13 +121,13 @@ SDK 解析 settings 的优先级：
 
 ## 5. 使用 CLI 发布 release
 
-接入方项目可以先生成自己的 `update-endpoint.json`：
+接入方项目首次接入时生成自己的 `update-endpoint.json`：
 
 ```powershell
-uot init --app my-tool --output update-endpoint.json
+uot init
 ```
 
-默认输出 NAS SDK endpoint，适用于首版 PyQt + NAS + 自定义 updater 流程。已存在文件时不会覆盖；确需覆盖时增加 `--force`。
+默认输出 NAS SDK endpoint，适用于首版 PyQt + NAS + 自定义 updater 流程。需要同时生成用户级 NAS settings 时增加 `--nas-root`。需要覆盖自动推导的应用标识时增加 `--app`。已存在文件时不会覆盖；确需覆盖时增加 `--force`。
 
 发布端可以只使用 `uot`，不需要导入 Python 代码。
 

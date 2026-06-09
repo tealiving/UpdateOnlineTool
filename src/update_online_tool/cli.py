@@ -14,7 +14,7 @@ from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.nas import NasReleaseSource
 from update_online_tool.service import UpdateService
-from update_online_tool.settings import UpdateToolSettings
+from update_online_tool.settings import UpdateToolSettings, user_settings_path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init = subparsers.add_parser("init", help="Generate a project update-endpoint.json.")
-    init.add_argument("--app", required=True, help="Application id.")
+    init.add_argument("--app", default="", help="Application id. Defaults to current directory name.")
     init.add_argument("--channel", default="stable", help="Release channel.")
     init.add_argument("--output", default="update-endpoint.json", type=Path, help="Output endpoint JSON path.")
     init.add_argument("--source-name", default="local-nas", help="Manifest source name.")
@@ -58,6 +58,9 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--package-url-prefix", default="uot-nas://nas", help="Package URL prefix.")
     init.add_argument("--auth-provider", default="update_online_tool", help="Auth provider.")
     init.add_argument("--priority", default=10, type=int, help="Manifest source priority.")
+    init.add_argument("--nas-root", default=None, type=Path, help="Optional NAS root. Writes user settings when set.")
+    init.add_argument("--settings-output", default=None, type=Path, help="Optional settings output path.")
+    init.add_argument("--updater-name", default="Updater.exe", help="Standalone updater executable name.")
     init.add_argument("--force", action="store_true", help="Overwrite existing output file.")
 
     publish = subparsers.add_parser("publish", help="Publish a zip package to the NAS release root.")
@@ -100,9 +103,13 @@ def _init(args: argparse.Namespace) -> int:
     :param args: 命令参数。
     :return: 进程退出码。
     """
+    app_id = _resolve_init_app_id(args)
     output_path = Path(args.output)
     if output_path.exists() and not args.force:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {output_path}")
+    settings_path = _resolve_init_settings_output(args)
+    if settings_path is not None and settings_path.exists() and not args.force:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"settings output already exists: {settings_path}")
     channel = str(args.channel or "stable").strip()
     payload = {
         "channel": channel,
@@ -110,7 +117,7 @@ def _init(args: argparse.Namespace) -> int:
         "manifest_sources": [
             {
                 "name": str(args.source_name or "local-nas").strip(),
-                "manifest_url": f"uot-nas://{str(args.app).strip()}/{channel}",
+                "manifest_url": f"uot-nas://{app_id}/{channel}",
                 "package_url_prefix": str(args.package_url_prefix or "uot-nas://nas").strip(),
                 "auth_provider": str(args.auth_provider or "update_online_tool").strip(),
                 "priority": int(args.priority),
@@ -118,8 +125,62 @@ def _init(args: argparse.Namespace) -> int:
         ],
     }
     _write_json(output_path, payload)
+    if settings_path is not None:
+        _write_json(settings_path, _build_init_settings_payload(args))
     print(f"Generated {output_path}")
+    if settings_path is not None:
+        print(f"Generated {settings_path}")
     return 0
+
+
+def _resolve_init_settings_output(args: argparse.Namespace) -> Path | None:
+    """解析 init 命令 settings 输出路径。
+
+    :param args: 命令参数。
+    :return: settings 输出路径；未请求生成时返回 None。
+    """
+    if args.settings_output is not None:
+        return Path(args.settings_output)
+    if args.nas_root is not None:
+        return user_settings_path(_resolve_init_app_id(args))
+    return None
+
+
+def _resolve_init_app_id(args: argparse.Namespace) -> str:
+    """解析 init 命令应用标识。
+
+    :param args: 命令参数。
+    :return: 应用标识。
+    """
+    app_id = str(args.app or "").strip()
+    if not app_id:
+        app_id = Path.cwd().name.strip()
+    if not app_id:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "app id is required outside a named project directory")
+    return app_id
+
+
+def _build_init_settings_payload(args: argparse.Namespace) -> dict[str, object]:
+    """构建 init 命令 settings payload。
+
+    :param args: 命令参数。
+    :return: settings JSON 字典。
+    """
+    if args.nas_root is None:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "--nas-root is required when writing settings")
+    return {
+        "nas": {
+            "root": str(Path(args.nas_root)),
+        },
+        "publish": {
+            "default_channel": str(args.channel or "stable").strip(),
+            "default_minimum_version": "1.0.0",
+            "package_filename": "package.zip",
+        },
+        "updater": {
+            "executable_name": str(args.updater_name or "Updater.exe").strip(),
+        },
+    }
 
 
 def _publish(args: argparse.Namespace) -> int:

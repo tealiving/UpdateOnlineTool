@@ -137,3 +137,59 @@ def test_cli_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
 
     assert exit_code == 1
     assert output.read_text(encoding="utf-8") == "{}"
+
+
+def test_cli_init_with_nas_root_writes_user_settings(tmp_path: Path, monkeypatch) -> None:
+    """验证 init 可同时写入用户级 NAS settings。
+
+    :param tmp_path: pytest 临时目录。
+    :param monkeypatch: pytest monkeypatch 工具。
+    :return: None
+    """
+    output = tmp_path / "update-endpoint.json"
+    nas_root = tmp_path / "nas"
+    appdata = tmp_path / "appdata"
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    exit_code = main(
+        [
+            "init",
+            "--app",
+            "my-tool",
+            "--output",
+            str(output),
+            "--nas-root",
+            str(nas_root),
+        ]
+    )
+
+    settings_path = appdata / "my-tool" / "update-online-tool" / "settings.json"
+    settings_payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert output.is_file()
+    assert settings_payload["nas"]["root"] == str(nas_root)
+    assert settings_payload["updater"]["executable_name"] == "Updater.exe"
+
+
+def test_cli_init_uses_cwd_name_and_default_output(tmp_path: Path, monkeypatch) -> None:
+    """验证 init 最小命令从当前目录推导项目名和默认输出文件。
+
+    :param tmp_path: pytest 临时目录。
+    :param monkeypatch: pytest monkeypatch 工具。
+    :return: None
+    """
+    project_root = tmp_path / "my-tool"
+    nas_root = tmp_path / "nas"
+    appdata = tmp_path / "appdata"
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    exit_code = main(["init", "--nas-root", str(nas_root)])
+
+    endpoint_payload = json.loads((project_root / "update-endpoint.json").read_text(encoding="utf-8"))
+    settings_path = appdata / "my-tool" / "update-online-tool" / "settings.json"
+    settings_payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert endpoint_payload["manifest_sources"][0]["manifest_url"] == "uot-nas://my-tool/stable"
+    assert settings_payload["nas"]["root"] == str(nas_root)

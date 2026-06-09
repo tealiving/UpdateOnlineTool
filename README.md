@@ -32,7 +32,38 @@ pip install -e D:\tealiving\peoject\UpdateOnlineTool
 
 ## 配置
 
-从 `config/settings.template.json` 创建 `config/settings.json`。
+推荐在接入方工具项目中执行 `uot init` 自动生成配置，不要求用户手动创建 JSON：
+
+```bash
+uot init --nas-root D:\Nas
+```
+
+该命令会生成两类文件：
+
+- 项目内 `update-endpoint.json`：随工具源码和打包产物一起分发，用于告诉工具走 NAS + 自定义 updater 流程。
+- 用户级 `settings.json`：写入当前操作系统用户配置目录，用于保存 NAS 根路径、默认发布通道和 updater 名称。
+
+`--app` 可选；不传时自动使用当前工作目录名作为应用标识。`--output` 也可选，默认写入当前目录的 `update-endpoint.json`。
+
+Windows 用户级路径：
+
+```text
+%APPDATA%\<app-id>\update-online-tool\settings.json
+```
+
+只想生成项目内 endpoint 时，可以不传 `--nas-root`：
+
+```bash
+uot init
+```
+
+需要把 settings 写到指定路径时，可以增加 `--settings-output`：
+
+```bash
+uot init --app my-tool --output update-endpoint.json --nas-root D:\Nas --settings-output config\settings.json
+```
+
+手动配置仍然支持，适合运维或打包脚本准备内置默认配置。
 
 Windows NAS 示例：
 
@@ -115,7 +146,7 @@ SDK 解析 settings 的优先级：
 接入方工具项目可以用 `uot init` 生成自己的 `update-endpoint.json`：
 
 ```bash
-uot init --app my-tool --output update-endpoint.json
+uot init
 ```
 
 默认生成 NAS SDK endpoint：
