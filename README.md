@@ -2,7 +2,8 @@
 
 基于 NAS 的桌面工具在线升级 SDK 和 CLI。
 
-<video src="https://github.com/tealiving/UpdateOnlineTool/raw/main/docs/demo/gui-upgrade-v104-to-v105-retake-1440p-fast.mp4" controls width="800"></video>
+
+https://github.com/user-attachments/assets/18b6dd1b-5cea-409e-9ca0-1f556fee3ff2
 
 ## 首版范围
 
