@@ -60,7 +60,27 @@ uot init --nas-root D:\Nas
 该命令会写入：
 
 - `update-endpoint.json`：放在工具项目内，随源码和打包产物分发，用于声明当前工具使用 NAS + `update-online-tool` + 自定义 updater。
-- 用户级 `settings.json`：保存 NAS 根路径等后端配置，Windows 默认在 `%APPDATA%\my-tool\update-online-tool\settings.json`。
+- `config/settings.json`：放在工具项目内，保存 NAS 根路径等后端配置；打包时由 UOT 装配命令复制到 PyInstaller `_internal/config/settings.json`。
+
+传入 `--nas-root` 时，`init` 默认会先检查 NAS 目录连通性和权限，再写入配置。检查内容包括：
+
+- 路径存在且是目录。
+- 当前系统凭证可读取目录。
+- 当前系统凭证可写入、读取并删除临时探测文件。
+
+检查通过时 CLI 输出类似：
+
+```text
+NAS check ok: root=D:\Nas
+NAS check ok: readable
+NAS check ok: writable
+```
+
+检查失败时返回非 0 退出码，并且不会写入 `update-endpoint.json` 或项目 settings。若只是离线生成配置，可以显式跳过：
+
+```powershell
+uot init --nas-root D:\Nas --skip-nas-check
+```
 
 `--app` 可选；不传时自动读取当前工作目录名作为应用标识。`--output` 可选；不传时默认生成当前目录的 `update-endpoint.json`。因此在工具项目根目录执行时，最小命令就是 `uot init --nas-root D:\Nas`。
 
@@ -70,7 +90,13 @@ uot init --nas-root D:\Nas
 uot init
 ```
 
-如果打包脚本需要生成内置默认 settings，可以指定输出路径：
+如果需要写入用户级 settings，显式增加 `--user-settings`：
+
+```powershell
+uot init --nas-root D:\Nas --user-settings
+```
+
+如果打包脚本需要把 settings 写到指定路径，可以指定输出路径：
 
 ```powershell
 uot init --app my-tool --output update-endpoint.json --nas-root D:\Nas --settings-output config\settings.json
@@ -117,9 +143,55 @@ SDK 解析 settings 的优先级：
 4. 打包内置配置，例如 PyInstaller 的 `_internal/config/settings.json`。
 5. 开发兜底 `config/settings.json`。
 
-用户或运维需要修改 NAS 路径时，应修改用户级 settings，或者让接入方 GUI 设置页写入该文件。不要要求用户修改 `pip install` 后的 SDK 包目录。
+用户或运维需要修改 NAS 路径时，可以修改项目内 `config/settings.json` 作为打包默认值；安装后如果需要按用户覆盖，应修改用户级 settings，或者让接入方 GUI 设置页写入该文件。不要要求用户修改 `pip install` 后的 SDK 包目录。
 
-## 5. 使用 CLI 发布 release
+## 5. 装配 PyInstaller 发布目录
+
+UOT 提供标准装配命令，接入方工具只需要先用 PyInstaller 构建 GUI bundle 和 launcher bundle。两个 bundle 的构建名称必须区分，避免 GUI exe 和 launcher exe 在同一个 spec 中同名覆盖。
+
+推荐 PyInstaller 输出：
+
+```text
+dist/
+├── MyTool_release_v1.0.6/
+│   ├── MyTool.exe
+│   └── _internal/
+└── MyTool_launcher/
+    ├── MyToolLauncher.exe
+    └── _internal/
+```
+
+装配命令：
+
+```powershell
+uot assemble-pyinstaller `
+  --version 1.0.6 `
+  --product-name MyTool `
+  --settings config\settings.json `
+  --force
+```
+
+装配后输出：
+
+```text
+dist/
+├── MyTool_install_v1.0.6/
+│   ├── MyTool.exe
+│   ├── current.json
+│   └── releases/
+│       └── 1.0.6/
+│           ├── MyTool.exe
+│           └── _internal/config/settings.json
+└── MyTool_update_v1.0.6/
+    ├── MyTool.exe
+    ├── _internal/config/settings.json
+    └── _launcher/
+        └── MyTool.exe
+```
+
+安装根目录的 `MyTool.exe` 是稳定 launcher，用户快捷方式应固定指向它；GUI 版本切换由 `current.json` 指向 `releases/<version>/MyTool.exe`。升级包里的 `_launcher/MyTool.exe` 用于升级后刷新稳定入口。
+
+## 6. 使用 CLI 发布 release
 
 接入方项目首次接入时生成自己的 `update-endpoint.json`：
 
@@ -127,7 +199,7 @@ SDK 解析 settings 的优先级：
 uot init
 ```
 
-默认输出 NAS SDK endpoint，适用于首版 PyQt + NAS + 自定义 updater 流程。需要同时生成用户级 NAS settings 时增加 `--nas-root`。需要覆盖自动推导的应用标识时增加 `--app`。已存在文件时不会覆盖；确需覆盖时增加 `--force`。
+默认输出 NAS SDK endpoint，适用于首版 PyQt + NAS + 自定义 updater 流程。需要生成项目内 NAS settings 时增加 `--nas-root`；需要写入用户级 settings 时同时增加 `--user-settings`。需要覆盖自动推导的应用标识时增加 `--app`。已存在文件时不会覆盖；确需覆盖时增加 `--force`。
 
 发布端可以只使用 `uot`，不需要导入 Python 代码。
 
@@ -167,7 +239,7 @@ CLI 写入的 NAS 目录结构：
         └── package.zip
 ```
 
-## 6. 在 Python 工具中使用 SDK
+## 7. 在 Python 工具中使用 SDK
 
 最小检查和准备升级流程：
 
@@ -195,9 +267,9 @@ if result.decision in {UpdateDecision.OPTIONAL_UPDATE, UpdateDecision.MANDATORY_
 
 `check()` 和 `prepare()` 都是后端操作。GUI 程序应在 worker 线程中调用，并把进度转换为对应前端的 signal/event。
 
-## 7. 启动 updater
+## 8. 启动 updater
 
-接入方工具必须提供独立 updater 可执行文件。updater 负责等待旧进程退出、解压升级包、切换当前版本指针，并重启 GUI 或把控制权交还给 launcher。
+接入方工具必须提供独立 updater 可执行文件。首版 updater 可以由工具项目实现，但安装目录、launcher 归一化和 `current.json` 标准结构由 UOT 的 `assemble-pyinstaller` 生成。
 
 如果 updater 接受 SDK 通用 pending payload，可以使用 `UpdateService.launch()`：
 
@@ -263,7 +335,7 @@ launch_existing_pending(
 )
 ```
 
-## 8. 推荐的接入方项目边界
+## 9. 推荐的接入方项目边界
 
 接入方工具项目负责：
 
@@ -272,7 +344,6 @@ launch_existing_pending(
 - 前端更新按钮、弹窗、进度、取消和重试交互。
 - worker 线程或任务调度。
 - 独立 updater 可执行文件。
-- 安装根目录结构和当前版本指针。
 - 日志和用户可见的排障信息。
 
 `update-online-tool` 负责：
@@ -283,16 +354,18 @@ launch_existing_pending(
 - 包体复制和校验。
 - pending manifest 辅助函数。
 - CLI 发布、校验和检查命令。
+- PyInstaller GUI bundle + launcher bundle 的标准装配。
+- 安装根目录、`current.json`、`releases/<version>` 和 `_launcher` 目录约定。
 
-## 9. 最小端到端流程
+## 10. 最小端到端流程
 
 1. 工具项目为新版本构建 zip 升级包。
-2. 发布端运行 `uot publish`。
-3. 发布端运行 `uot verify`。
-4. 用户启动旧版本工具。
-5. 前端调用 SDK `check()`。
-6. 用户确认后，前端调用 SDK `prepare()`。
-7. 前端写入 pending manifest 并启动 updater。
-8. 前端退出。
-9. Updater 安装新 release 并切换当前版本指针。
-10. Launcher 或 updater 启动新版本 GUI。
+2. 发布前运行 `uot assemble-pyinstaller` 生成标准安装目录和升级目录。
+3. 发布端把升级目录压缩为包体并运行 `uot publish`。
+4. 发布端运行 `uot verify`。
+5. 用户启动旧版本安装根目录的稳定 launcher。
+6. 前端调用 SDK `check()`。
+7. 用户确认后，前端调用 SDK `prepare()`。
+8. 前端写入 pending manifest 并启动 updater。
+9. 前端退出。
+10. Updater 安装新 release，切换 `current.json`，并由稳定 launcher 打开新版本 GUI。

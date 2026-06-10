@@ -1,0 +1,4 @@
+interface:
+  display_name: "PyQt NAS Online Update"
+  short_description: "Build PyQt NAS online updates with UOT."
+  default_prompt: "Help this PyQt project use UOT for NAS-based online updates."

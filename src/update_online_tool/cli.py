@@ -5,14 +5,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.nas import NasReleaseSource
+from update_online_tool.pyinstaller_assembly import assemble_pyinstaller_release, default_pyinstaller_assembly_config
 from update_online_tool.service import UpdateService
 from update_online_tool.settings import UpdateToolSettings, user_settings_path
 
@@ -34,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
             return _verify(args)
         if args.command == "check":
             return _check(args)
+        if args.command == "assemble-pyinstaller":
+            return _assemble_pyinstaller(args)
     except UpdateError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -58,9 +63,11 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--package-url-prefix", default="uot-nas://nas", help="Package URL prefix.")
     init.add_argument("--auth-provider", default="update_online_tool", help="Auth provider.")
     init.add_argument("--priority", default=10, type=int, help="Manifest source priority.")
-    init.add_argument("--nas-root", default=None, type=Path, help="Optional NAS root. Writes user settings when set.")
+    init.add_argument("--nas-root", default=None, type=Path, help="Optional NAS root. Writes project settings when set.")
     init.add_argument("--settings-output", default=None, type=Path, help="Optional settings output path.")
+    init.add_argument("--user-settings", action="store_true", help="Write settings to the OS user config directory.")
     init.add_argument("--updater-name", default="Updater.exe", help="Standalone updater executable name.")
+    init.add_argument("--skip-nas-check", action="store_true", help="Skip NAS read/write validation during init.")
     init.add_argument("--force", action="store_true", help="Overwrite existing output file.")
 
     publish = subparsers.add_parser("publish", help="Publish a zip package to the NAS release root.")
@@ -85,6 +92,14 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument("--current-version", required=True, help="Current app version.")
     check.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     check.add_argument("--skipped-version", default="", help="Skipped version.")
+
+    assemble = subparsers.add_parser("assemble-pyinstaller", help="Assemble PyInstaller GUI and launcher bundles.")
+    assemble.add_argument("--version", required=True, help="Release version.")
+    assemble.add_argument("--dist-dir", default="dist", type=Path, help="PyInstaller dist directory.")
+    assemble.add_argument("--app", default="", help="Application id. Defaults to product name.")
+    assemble.add_argument("--product-name", required=True, help="Final executable name without .exe.")
+    assemble.add_argument("--settings", default=None, type=Path, help="Project settings.json to bundle.")
+    assemble.add_argument("--force", action="store_true", help="Overwrite existing output directories.")
     return parser
 
 
@@ -110,6 +125,8 @@ def _init(args: argparse.Namespace) -> int:
     settings_path = _resolve_init_settings_output(args)
     if settings_path is not None and settings_path.exists() and not args.force:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"settings output already exists: {settings_path}")
+    for log_line in _check_init_nas_root(args):
+        print(log_line)
     channel = str(args.channel or "stable").strip()
     payload = {
         "channel": channel,
@@ -142,8 +159,68 @@ def _resolve_init_settings_output(args: argparse.Namespace) -> Path | None:
     if args.settings_output is not None:
         return Path(args.settings_output)
     if args.nas_root is not None:
-        return user_settings_path(_resolve_init_app_id(args))
+        if bool(args.user_settings):
+            return user_settings_path(_resolve_init_app_id(args))
+        return Path(args.output).parent / "config" / "settings.json"
     return None
+
+
+def _check_init_nas_root(args: argparse.Namespace) -> list[str]:
+    """检查 init 命令传入的 NAS 根目录。
+
+    :param args: 命令参数。
+    :return: 检查日志。
+    """
+    if args.nas_root is None:
+        return []
+    if bool(args.skip_nas_check):
+        return [f"NAS check skipped: root={Path(args.nas_root)}"]
+    return _probe_nas_root(Path(args.nas_root))
+
+
+def _probe_nas_root(nas_root: Path) -> list[str]:
+    """探测 NAS 根目录是否可读写。
+
+    :param nas_root: NAS 根目录。
+    :return: 检查日志。
+    """
+    root = Path(nas_root)
+    if not root.is_dir():
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not available: {root}")
+    try:
+        next(root.iterdir(), None)
+    except OSError as exc:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not readable: {root}") from exc
+    probe_path = root / f".uot-write-test-{os.getpid()}-{uuid4().hex}.tmp"
+    probe_text = "update-online-tool nas check\n"
+    try:
+        probe_path.write_text(probe_text, encoding="utf-8")
+        if probe_path.read_text(encoding="utf-8") != probe_text:
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root write probe mismatch: {root}")
+        probe_path.unlink()
+    except UpdateError:
+        raise
+    except OSError as exc:
+        _cleanup_probe_file(probe_path)
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not writable: {root}") from exc
+    return [
+        f"NAS check ok: root={root}",
+        "NAS check ok: readable",
+        "NAS check ok: writable",
+    ]
+
+
+def _cleanup_probe_file(path: Path) -> None:
+    """清理 NAS 探测临时文件。
+
+    :param path: 临时文件路径。
+    :return: None
+    """
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        return
 
 
 def _resolve_init_app_id(args: argparse.Namespace) -> str:
@@ -271,6 +348,28 @@ def _check(args: argparse.Namespace) -> int:
         skipped_version=args.skipped_version or None,
     )
     print(f"{result.decision.value}: {result.manifest.version}")
+    return 0
+
+
+def _assemble_pyinstaller(args: argparse.Namespace) -> int:
+    """装配 PyInstaller 发布目录。
+
+    :param args: 命令参数。
+    :return: 进程退出码。
+    """
+    config = default_pyinstaller_assembly_config(
+        version=args.version,
+        app_id=args.app,
+        dist_dir=Path(args.dist_dir),
+        product_name=args.product_name,
+        settings_path=args.settings,
+        force=bool(args.force),
+    )
+    result = assemble_pyinstaller_release(config)
+    print(f"Assembled install root: {result.install_root}")
+    print(f"Assembled update root: {result.update_root}")
+    print(f"Launcher executable: {result.launcher_executable}")
+    print(f"Release executable: {result.release_executable}")
     return 0
 
 

@@ -17,6 +17,7 @@ GUI 项目只负责界面：
 - 校验包体大小和 SHA-256。
 - 写入 pending manifest。
 - 启动独立 updater。
+- 装配 PyInstaller GUI release 与稳定 launcher。
 
 GUI 项目应在线程中调用 SDK 方法。SDK 本身不导入 PyQt。
 
@@ -93,7 +94,7 @@ from update_online_tool.pyqt_runtime import (
 3. GUI 使用 `write_pyqt_pending_manifest()` 写入 `pending-update.json`。
 4. GUI 使用 `launch_existing_pending()` 启动工具项目自己的 updater。
 5. GUI 退出。
-6. 工具项目的 updater 等待旧 PID，安装文件，切换 `current.json`，再由 launcher 打开新 GUI。
+6. 工具项目的 updater 等待旧 PID，按 UOT 标准目录安装文件，切换 `current.json`，再由稳定 launcher 打开新 GUI。
 
 `launch_existing_pending()` 启动的命令形态：
 
@@ -115,10 +116,14 @@ from update_online_tool.pyqt_runtime import (
 }
 ```
 
-接入方项目的包体组装脚本可以把默认 `settings.json` 复制到 PyInstaller 运行时目录：
+接入方项目可以使用 UOT 装配命令把默认 `settings.json` 复制到 PyInstaller 运行时目录：
 
 ```text
 _internal/config/settings.json
+```
+
+```powershell
+uot assemble-pyinstaller --version 1.0.6 --product-name MyTool --settings config\settings.json --force
 ```
 
 应用适配器建议按以下顺序解析 settings：

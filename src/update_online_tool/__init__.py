@@ -7,6 +7,12 @@ from update_online_tool.downloader import CancellationToken, PreparedPackage
 from update_online_tool.launcher import LaunchResult, StandaloneUpdaterLauncher
 from update_online_tool.manifest import UpdateManifest, UpdatePackageInfo
 from update_online_tool.nas import NasReleaseSource
+from update_online_tool.pyinstaller_assembly import (
+    PyInstallerAssemblyConfig,
+    PyInstallerAssemblyResult,
+    assemble_pyinstaller_release,
+    default_pyinstaller_assembly_config,
+)
 from update_online_tool.service import CheckUpdateResult, UpdateService
 from update_online_tool.settings import UPDATE_SETTINGS_FILE_ENV, UpdateToolSettings, resolve_settings_path, user_settings_path
 from update_online_tool.versioning import UpdateDecision
@@ -23,6 +29,10 @@ __all__ = [
     "UpdateManifest",
     "UpdatePackageInfo",
     "NasReleaseSource",
+    "PyInstallerAssemblyConfig",
+    "PyInstallerAssemblyResult",
+    "assemble_pyinstaller_release",
+    "default_pyinstaller_assembly_config",
     "CheckUpdateResult",
     "UpdateService",
     "UpdateToolSettings",

@@ -41,9 +41,35 @@ uot init --nas-root D:\Nas
 该命令会生成两类文件：
 
 - 项目内 `update-endpoint.json`：随工具源码和打包产物一起分发，用于告诉工具走 NAS + 自定义 updater 流程。
-- 用户级 `settings.json`：写入当前操作系统用户配置目录，用于保存 NAS 根路径、默认发布通道和 updater 名称。
+- 项目内 `config/settings.json`：用于保存 NAS 根路径、默认发布通道和 updater 名称；PyInstaller 打包时可由 UOT 装配命令自动复制到 `_internal/config/settings.json`。
+
+传入 `--nas-root` 时，`init` 会在写配置前自动检查 NAS 根目录：
+
+- 目标路径是否存在且是目录。
+- 当前系统凭证是否可读取该目录。
+- 当前系统凭证是否可写入、读取并删除临时探测文件。
+
+检查结果会直接打印到 CLI 输出，例如：
+
+```text
+NAS check ok: root=D:\Nas
+NAS check ok: readable
+NAS check ok: writable
+```
+
+如果当前机器暂时无法连接 NAS，但只需要离线生成配置，可以显式跳过检查：
+
+```bash
+uot init --nas-root D:\Nas --skip-nas-check
+```
 
 `--app` 可选；不传时自动使用当前工作目录名作为应用标识。`--output` 也可选，默认写入当前目录的 `update-endpoint.json`。
+
+需要写入用户级 settings 时，显式增加 `--user-settings`：
+
+```bash
+uot init --nas-root D:\Nas --user-settings
+```
 
 Windows 用户级路径：
 
@@ -117,6 +143,48 @@ SDK 解析 settings 的优先级：
 5. 开发兜底 `config/settings.json`。
 
 用户修改 NAS 路径时，推荐修改用户级配置或通过 GUI 设置页写入用户级配置，不要修改 SDK 安装目录。
+
+## PyInstaller 装配
+
+UOT 提供标准 PyInstaller 目录装配命令，接入方不需要自己处理 launcher 名称、`current.json` 或 release 目录结构。
+
+前提是 PyInstaller 已经分别构建两个 onedir 目录：
+
+```text
+dist/
+├── MyTool_release_v1.0.6/
+│   ├── MyTool.exe
+│   └── _internal/
+└── MyTool_launcher/
+    ├── MyToolLauncher.exe
+    └── _internal/
+```
+
+执行装配：
+
+```bash
+uot assemble-pyinstaller --version 1.0.6 --product-name MyTool --settings config/settings.json --force
+```
+
+输出目录：
+
+```text
+dist/
+├── MyTool_install_v1.0.6/
+│   ├── MyTool.exe
+│   ├── current.json
+│   └── releases/
+│       └── 1.0.6/
+│           ├── MyTool.exe
+│           └── _internal/config/settings.json
+└── MyTool_update_v1.0.6/
+    ├── MyTool.exe
+    ├── _internal/config/settings.json
+    └── _launcher/
+        └── MyTool.exe
+```
+
+用户快捷方式和后续启动入口始终指向安装根目录的 `MyTool.exe`。该文件是稳定 launcher；实际 GUI 位于 `releases/<version>/MyTool.exe`。升级包中的 `_launcher/MyTool.exe` 用于升级后刷新安装根目录的稳定入口。
 
 ## NAS 目录结构
 
@@ -228,7 +296,7 @@ from update_online_tool.pyqt_runtime import (
 }
 ```
 
-`launch_existing_pending()` 只负责使用 `--pending <path>` 启动 updater。它不负责解压包、切换 `current.json`、重启 GUI 或清理旧 release；这些操作属于工具项目自己的独立 updater 和 launcher。
+`launch_existing_pending()` 只负责使用 `--pending <path>` 启动 updater。它不负责解压包、切换 `current.json`、重启 GUI 或清理旧 release；这些是 updater 的安装执行职责。标准目录结构、launcher 入口归一化和 `current.json` 初始内容由 `uot assemble-pyinstaller` 生成。
 
 ## 边界
 
@@ -238,10 +306,12 @@ from update_online_tool.pyqt_runtime import (
 - 发布并校验 `latest.json` 与 `package.zip`。
 - 从 NAS 复制升级包并进行进度回调和 SHA-256 校验。
 - 提供 PyQt pending manifest 辅助能力。
+- 装配 PyInstaller GUI release 与稳定 launcher。
+- 生成标准安装根目录、`current.json`、`releases/<version>` 和 `_launcher` 目录约定。
 
 接入方工具项目仍然负责：
 
 - 打包自己的 PyInstaller release。
 - 提供 `MyToolUpdater.exe` 或等价 updater。
-- 决定安装根目录结构和 `current.json` 语义。
+- 执行 updater 内的等待旧进程、解压、替换和重启动作。
 - 管理所有 GUI 文案、弹窗、QThread worker、重试和取消交互。
