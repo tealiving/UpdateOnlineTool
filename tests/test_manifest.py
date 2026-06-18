@@ -42,6 +42,40 @@ def test_manifest_parses_v2_payload() -> None:
     assert manifest.to_payload()["version"] == "1.0.6"
 
 
+def test_manifest_parses_version_policy_fields() -> None:
+    """验证 manifest 可解析版本治理策略字段。"""
+    payload = _payload()
+    payload.update(
+        {
+            "allow_downgrade": True,
+            "hidden": True,
+            "requires_confirmation": True,
+            "rollout_percent": 25,
+            "data_schema_version": 3,
+        }
+    )
+
+    manifest = UpdateManifest.from_payload(payload)
+
+    assert manifest.allow_downgrade is True
+    assert manifest.hidden is True
+    assert manifest.requires_confirmation is True
+    assert manifest.rollout_percent == 25
+    assert manifest.data_schema_version == 3
+    assert manifest.to_payload()["rollout_percent"] == 25
+
+
+def test_manifest_rejects_invalid_rollout_percent() -> None:
+    """验证灰度比例必须在 0-100 之间。"""
+    payload = _payload()
+    payload["rollout_percent"] = 101
+
+    with pytest.raises(UpdateError) as error:
+        UpdateManifest.from_payload(payload)
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
 def test_manifest_rejects_ifw_fields() -> None:
     """验证第一版契约拒绝 IFW 字段。
 

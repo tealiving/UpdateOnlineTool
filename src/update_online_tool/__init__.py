@@ -2,19 +2,59 @@
 
 from __future__ import annotations
 
+from update_online_tool.diagnostics import collect_diagnostics, write_diagnostic_archive
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.downloader import CancellationToken, PreparedPackage
+from update_online_tool.installed import (
+    InstalledVersion,
+    MigrationResult,
+    list_installed_versions,
+    migrate_install_root,
+    switch_installed_version,
+)
 from update_online_tool.launcher import LaunchResult, StandaloneUpdaterLauncher
-from update_online_tool.manifest import UpdateManifest, UpdatePackageInfo
+from update_online_tool.manifest import ManifestSignature, UpdateManifest, UpdatePackageInfo
+from update_online_tool.migration_package import (
+    MigrationPackageResult,
+    MigrationPackageVerification,
+    verify_migration_package,
+    write_migration_package_template,
+)
 from update_online_tool.nas import NasReleaseSource
 from update_online_tool.pyinstaller_assembly import (
     PyInstallerAssemblyConfig,
     PyInstallerAssemblyResult,
+    UpdaterPyInstallerSpecResult,
     assemble_pyinstaller_release,
     default_pyinstaller_assembly_config,
+    write_updater_pyinstaller_spec,
 )
-from update_online_tool.service import CheckUpdateResult, UpdateService
+from update_online_tool.runtime import (
+    RuntimeResult,
+    RuntimeStatus,
+    apply_pending_update,
+    install_prepared_package,
+    launch_current,
+    rollback_installation,
+    wait_for_process_exit,
+    write_update_result,
+    write_update_status,
+)
+from update_online_tool.service import CheckUpdateResult, RemoteVersion, UpdateService
 from update_online_tool.settings import UPDATE_SETTINGS_FILE_ENV, UpdateToolSettings, resolve_settings_path, user_settings_path
+from update_online_tool.signature import (
+    ED25519_SIGNATURE_ALGORITHM,
+    SIGNATURE_ALGORITHM,
+    canonical_manifest_bytes,
+    derive_ed25519_public_key_pem,
+    generate_ed25519_private_key_pem,
+    generate_hmac_key,
+    load_hmac_key,
+    sign_manifest_payload,
+    sign_manifest_payload_with_key_file,
+    verify_manifest_signature,
+    verify_manifest_signature_with_key_file,
+)
 from update_online_tool.versioning import UpdateDecision
 
 __version__ = "0.1.0"
@@ -22,23 +62,58 @@ __version__ = "0.1.0"
 __all__ = [
     "UpdateError",
     "UpdateErrorCode",
+    "collect_diagnostics",
+    "write_diagnostic_archive",
     "CancellationToken",
     "PreparedPackage",
+    "InstalledVersion",
+    "MigrationResult",
+    "list_installed_versions",
+    "migrate_install_root",
+    "switch_installed_version",
     "LaunchResult",
     "StandaloneUpdaterLauncher",
+    "ManifestSignature",
     "UpdateManifest",
     "UpdatePackageInfo",
+    "MigrationPackageResult",
+    "MigrationPackageVerification",
+    "verify_migration_package",
+    "write_migration_package_template",
     "NasReleaseSource",
     "PyInstallerAssemblyConfig",
     "PyInstallerAssemblyResult",
+    "UpdaterPyInstallerSpecResult",
     "assemble_pyinstaller_release",
     "default_pyinstaller_assembly_config",
+    "write_updater_pyinstaller_spec",
+    "RuntimeResult",
+    "RuntimeStatus",
+    "apply_pending_update",
+    "install_prepared_package",
+    "launch_current",
+    "rollback_installation",
+    "wait_for_process_exit",
+    "write_update_result",
+    "write_update_status",
     "CheckUpdateResult",
+    "RemoteVersion",
     "UpdateService",
     "UpdateToolSettings",
     "UPDATE_SETTINGS_FILE_ENV",
     "resolve_settings_path",
     "user_settings_path",
+    "SIGNATURE_ALGORITHM",
+    "ED25519_SIGNATURE_ALGORITHM",
+    "canonical_manifest_bytes",
+    "derive_ed25519_public_key_pem",
+    "generate_ed25519_private_key_pem",
+    "generate_hmac_key",
+    "load_hmac_key",
+    "sign_manifest_payload",
+    "sign_manifest_payload_with_key_file",
+    "verify_manifest_signature",
+    "verify_manifest_signature_with_key_file",
     "UpdateDecision",
     "__version__",
 ]

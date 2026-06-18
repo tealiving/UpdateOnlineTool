@@ -42,6 +42,18 @@ class NasReleaseSource:
             return self.root / app_id / channel / platform / "latest.json"
         return self.root / app_id / channel / "latest.json"
 
+    def versions_index_path(self, app_id: str, channel: str, platform: str = "") -> Path:
+        """解析通道版本索引路径。
+
+        :param app_id: 应用标识。
+        :param channel: 发布通道。
+        :param platform: 可选平台；为空时使用旧版通道路径。
+        :return: versions.json 路径。
+        """
+        if platform:
+            return self.root / app_id / channel / platform / "versions.json"
+        return self.root / app_id / channel / "versions.json"
+
     def version_dir(self, app_id: str, version: str, platform: str = "") -> Path:
         """解析版本目录。
 
@@ -53,6 +65,35 @@ class NasReleaseSource:
         if platform:
             return self.root / app_id / f"v{version}" / platform
         return self.root / app_id / f"v{version}"
+
+    def version_manifest_path(self, app_id: str, version: str, platform: str = "") -> Path:
+        """解析指定版本 manifest 路径。
+
+        :param app_id: 应用标识。
+        :param version: 版本号。
+        :param platform: 可选平台；为空时使用旧版版本路径。
+        :return: 版本 manifest 路径。
+        """
+        return self.version_dir(app_id, version, platform) / "latest.json"
+
+    def iter_version_manifest_paths(self, app_id: str, platform: str = "") -> list[Path]:
+        """列出应用历史版本 manifest。
+
+        :param app_id: 应用标识。
+        :param platform: 可选平台；为空时使用旧版版本路径。
+        :return: 按路径排序的 manifest 列表。
+        """
+        app_root = self.root / app_id
+        if not app_root.is_dir():
+            return []
+        manifest_paths: list[Path] = []
+        for version_dir in app_root.glob("v*"):
+            if not version_dir.is_dir():
+                continue
+            candidate = version_dir / platform / "latest.json" if platform else version_dir / "latest.json"
+            if candidate.is_file():
+                manifest_paths.append(candidate)
+        return sorted(manifest_paths)
 
     def package_path(self, app_id: str, version: str, package_filename: str, platform: str = "") -> Path:
         """解析发布包路径。

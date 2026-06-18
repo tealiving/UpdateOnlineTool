@@ -68,7 +68,7 @@ uot init --nas-root D:\Nas
 - `config/settings.json` 是构建默认配置。使用 `uot assemble-pyinstaller --settings config\settings.json` 时，UOT 会复制到运行时配置目录；不用 UOT 装配时，PyInstaller spec 需要手动复制等效文件。
 - `current.json` 是安装根状态文件，由 UOT 装配生成，升级时由 updater 修改；不要把它作为源码配置放进版本化 GUI release。
 - `latest.json` 是 NAS 远端 manifest，由 `uot publish` 生成；不要打进客户端应用包。
-- `pending-update.json`、`update-result.json` 和 `logs/` 是运行时产物，不要预置。
+- `pending-update.json`、`update-result.json`、`update-status.json` 和 `logs/` 是运行时产物，不要预置。
 
 传入 `--nas-root` 时，`init` 默认会先检查 NAS 目录连通性和权限，再写入配置。检查内容包括：
 
@@ -234,6 +234,110 @@ uot verify --settings config\settings.json --app my-tool
 ```powershell
 uot check --settings config\settings.json --app my-tool --current-version 1.0.5
 ```
+
+发布时可附带版本治理策略：
+
+```powershell
+uot publish --settings config\settings.json --app my-tool --version 1.0.7 --package dist\package.zip --requires-confirmation --rollout-percent 25 --data-schema-version 3
+```
+
+支持的策略包括 `--allow-downgrade`、`--hidden`、`--requires-confirmation`、`--rollout-percent 0..100` 和 `--data-schema-version <int>`。`hidden` 版本默认不会出现在 `list-remote`，也不会被普通 `check` 当作可用更新；运维可以用 `list-remote --include-hidden`、`show-version` 或 `prepare-version` 显式操作。
+
+企业发布可开启 manifest 签名：
+
+```powershell
+uot keygen --output secrets\uot-signing.key --public-output config\uot-signing.pub
+uot publish --settings config\settings.json --app my-tool --version 1.0.7 --package dist\package.zip --sign-key secrets\uot-signing.key --key-id release
+uot verify --settings config\settings.json --app my-tool --signature-key config\uot-signing.pub
+```
+
+`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会把 `signature` 写入 `latest.json` 和版本目录 manifest。`verify --signature-key`、`install-prepared --signature-key`、`apply-update --signature-key` 会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。兼容场景仍可用 `keygen --algorithm hmac-sha256`。
+
+列出和准备历史版本：
+
+```powershell
+uot list-remote --settings config\settings.json --app my-tool --platform windows
+uot list-remote --settings config\settings.json --app my-tool --platform windows --include-hidden
+uot show-version --settings config\settings.json --app my-tool --version 1.0.4 --platform windows
+uot prepare-version --settings config\settings.json --app my-tool --version 1.0.4 --platform windows --download-dir updates
+```
+
+`prepare-version` 只复制并校验包，不直接改安装根或 `current.json`。已准备包可以交给标准 runtime 安装：
+
+```powershell
+uot install-prepared --install-root D:\Tools\MyTool --package updates\package.zip --manifest updates\latest.json
+uot apply-update --pending D:\Tools\MyTool\pending-update.json
+uot rollback --install-root D:\Tools\MyTool
+```
+
+最终应用中建议打包更窄的 `uot-updater` 入口，而不是完整发布端 CLI：
+
+```powershell
+uot write-updater-spec --output-dir build\updater --name MyToolUpdater
+python -m PyInstaller --noconfirm build\updater\MyToolUpdater.spec
+uot assemble-pyinstaller `
+  --version 1.0.6 `
+  --product-name MyTool `
+  --settings config\settings.json `
+  --updater-bundle dist\MyToolUpdater `
+  --force
+```
+
+`--updater-bundle` 可以是 PyInstaller onefile 文件或 onedir 目录，装配后会进入安装根 `updater\`。完整安装包应携带 `updater\`；升级 zip 不应预置 `latest.json`、`pending-update.json`、`update-result.json` 或 `update-status.json`。
+
+```powershell
+uot-updater install --install-root D:\Tools\MyTool --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --wait-pid 12345 --wait-timeout 60 --restart
+uot-updater apply --pending D:\Tools\MyTool\pending-update.json --signature-key config\uot-signing.pub --restart
+uot-updater rollback --install-root D:\Tools\MyTool
+uot-updater launch-current --install-root D:\Tools\MyTool
+```
+
+上线前可先预检：
+
+```powershell
+uot install-prepared --install-root D:\Tools\MyTool --package updates\package.zip --manifest updates\latest.json --dry-run
+```
+
+`apply-update` 读取 pending manifest 中的 `package_path`、`install_root` 和 `manifest`。runtime 会校验包大小和 SHA-256，安全解压到 `releases\<version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 执行时会创建 `update.lock` 防止同一安装根并发更新；失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段包括 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`；`percent` 是阶段级 UI 提示，不是下载字节进度。`--wait-pid` 用于等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT` 并提示用户关闭应用；`--restart` 会切换后启动当前版本并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度应由 updater 自己显示窗口，或由外部进程轮询 `update-status.json`。新 GUI 启动时可读取该文件展示上次更新结果。如果项目需要完全自定义进程退出和重启，也可以只使用 `prepare-version` 和 SDK。
+
+企业级执行链路：构建 update zip，`publish --sign-key` 写入 NAS，客户端 `check` 发现最新版本，历史版本选择器用 `list-remote/show-version/prepare-version`，runtime 通过 `install-prepared --signature-key` 或 `apply-update --signature-key` 安装，已安装版本通过 `switch-installed` 切换，失败时用 `rollback` 回到 `previous_version`。
+`uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取该索引，索引不存在时回退扫描 `v<version>` 历史目录。
+
+现场排障可收集诊断报告和诊断包：
+
+```powershell
+uot doctor --install-root D:\Tools\MyTool --output diagnostics\doctor.json --archive diagnostics\doctor.zip
+```
+
+诊断报告包含安装根关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
+
+旧版平铺安装根可迁移到新架构：
+
+```powershell
+uot write-migration-package --output-dir dist\MyTool_migration_v1.0.0 --app my-tool --version 1.0.0 --entry-name MyTool.exe --platform windows --updater-bundle dist\MyToolUpdater --settings config\settings.json --endpoint update-endpoint.json
+uot verify-migration-package --package-dir dist\MyTool_migration_v1.0.0
+uot migrate-install-root --install-root D:\Tools\MyTool --version 1.0.0 --entry-name MyTool.exe --app my-tool --platform windows --dry-run
+uot migrate-install-root --install-root D:\Tools\MyTool --version 1.0.0 --entry-name MyTool.exe --app my-tool --platform windows
+```
+
+迁移会把旧安装根中的应用文件复制到 `releases\<version>\`，写入 `current.json`，并保留旧根目录文件不删除。运行态文件如 `update-result.json`、`update-status.json`、`pending-update.json`、`update.lock`、`logs\` 不会复制进 release。目标 release 已存在时需要 `--force`。
+
+如果目标版本已经安装在本机安装根，可以直接切换本地 `current.json`：
+
+```powershell
+uot list-installed --install-root D:\Tools\MyTool
+uot switch-installed --install-root D:\Tools\MyTool --version 1.0.4
+```
+
+`switch-installed` 只适用于 `releases\<version>\<app_exe>` 已存在的版本。它会记录 `previous_version` 供 `rollback` 使用，但不下载、不解压、不重启 GUI；接入方应在切换后自行重启或让稳定 launcher 下次启动时进入目标版本。
+
+文件打包归属：
+
+- `update-endpoint.json` 打进应用包。
+- `current.json` 属于安装根运行状态，首包带初始版本，后续由 updater 修改。
+- `config/settings*.json` 通常只用于构建和发布，不应带 NAS 敏感配置进入最终用户包。
+- `latest.json` 和 `versions.json` 只放 NAS，不打进应用包。
+- `pending-update.json`、`update-result.json` 和 `update-status.json` 是运行时文件，不打进发布包。
 
 CLI 写入的 NAS 目录结构：
 

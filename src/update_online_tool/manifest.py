@@ -20,8 +20,15 @@ _MANIFEST_KEYS = {
     "notes",
     "platform",
     "package",
+    "allow_downgrade",
+    "hidden",
+    "requires_confirmation",
+    "rollout_percent",
+    "data_schema_version",
+    "signature",
 }
 _PACKAGE_KEYS = {"url", "size", "sha256"}
+_SIGNATURE_KEYS = {"algorithm", "key_id", "value"}
 _SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
 
 
@@ -69,6 +76,33 @@ class UpdatePackageInfo:
 
 
 @dataclass(frozen=True)
+class ManifestSignature:
+    """manifest 签名信息。"""
+
+    algorithm: str
+    key_id: str
+    value: str
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ManifestSignature":
+        """从字典解析签名信息。"""
+        _reject_extra_keys(payload, allowed_keys=_SIGNATURE_KEYS, context="signature")
+        return cls(
+            algorithm=_require_text(payload, "algorithm"),
+            key_id=_require_text(payload, "key_id"),
+            value=_require_text(payload, "value"),
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        """转换为可序列化字典。"""
+        return {
+            "algorithm": self.algorithm,
+            "key_id": self.key_id,
+            "value": self.value,
+        }
+
+
+@dataclass(frozen=True)
 class UpdateManifest:
     """在线升级 manifest。
 
@@ -82,6 +116,12 @@ class UpdateManifest:
     :param notes: 发布说明。
     :param platform: 可选平台标识。
     :param package: 升级包信息。
+    :param allow_downgrade: 是否允许从更高版本切换回该版本。
+    :param hidden: 是否从普通版本列表中隐藏。
+    :param requires_confirmation: 安装或切换前是否需要用户确认。
+    :param rollout_percent: 灰度比例，0-100。
+    :param data_schema_version: 应用数据 schema 版本，0 表示未声明。
+    :param signature: 可选 manifest 签名。
     :return: None
     """
 
@@ -95,6 +135,12 @@ class UpdateManifest:
     notes: str
     package: UpdatePackageInfo
     platform: str = ""
+    allow_downgrade: bool = False
+    hidden: bool = False
+    requires_confirmation: bool = False
+    rollout_percent: int = 100
+    data_schema_version: int = 0
+    signature: ManifestSignature | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "UpdateManifest":
@@ -113,6 +159,9 @@ class UpdateManifest:
         package_payload = payload.get("package")
         if not isinstance(package_payload, dict):
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "package must be an object")
+        signature_payload = payload.get("signature")
+        if signature_payload is not None and not isinstance(signature_payload, dict):
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "signature must be an object")
         return cls(
             schema_version=schema_version,
             app_id=_require_text(payload, "app_id"),
@@ -124,6 +173,18 @@ class UpdateManifest:
             notes=_require_text(payload, "notes"),
             package=UpdatePackageInfo.from_payload(package_payload),
             platform=_optional_text(payload, "platform"),
+            allow_downgrade=_optional_bool(payload, "allow_downgrade", default=False),
+            hidden=_optional_bool(payload, "hidden", default=False),
+            requires_confirmation=_optional_bool(payload, "requires_confirmation", default=False),
+            rollout_percent=_optional_int_range(payload, "rollout_percent", default=100, minimum=0, maximum=100),
+            data_schema_version=_optional_int_range(
+                payload,
+                "data_schema_version",
+                default=0,
+                minimum=0,
+                maximum=1_000_000,
+            ),
+            signature=ManifestSignature.from_payload(signature_payload) if signature_payload else None,
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -144,6 +205,18 @@ class UpdateManifest:
         }
         if self.platform:
             payload["platform"] = self.platform
+        if self.allow_downgrade:
+            payload["allow_downgrade"] = self.allow_downgrade
+        if self.hidden:
+            payload["hidden"] = self.hidden
+        if self.requires_confirmation:
+            payload["requires_confirmation"] = self.requires_confirmation
+        if self.rollout_percent != 100:
+            payload["rollout_percent"] = self.rollout_percent
+        if self.data_schema_version:
+            payload["data_schema_version"] = self.data_schema_version
+        if self.signature is not None:
+            payload["signature"] = self.signature.to_payload()
         return payload
 
 
@@ -189,3 +262,33 @@ def _optional_text(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string")
     return value.strip()
+
+
+def _optional_bool(payload: dict[str, Any], key: str, *, default: bool) -> bool:
+    """读取可选布尔字段。"""
+    value = payload.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a boolean")
+    return value
+
+
+def _optional_int_range(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """读取可选整数范围字段。"""
+    value = payload.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum or value > maximum:
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID,
+            f"{key} must be an integer between {minimum} and {maximum}",
+        )
+    return value

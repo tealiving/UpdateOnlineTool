@@ -40,7 +40,7 @@ config/settings.json
 - `config/settings.json` 是构建默认后端配置；使用 `uot assemble-pyinstaller --settings <settings_file>` 时会复制到运行时配置目录。若不用 UOT 装配，项目 PyInstaller spec 必须手动复制到等效位置。
 - `current.json` 由 UOT 装配生成在安装根，updater 升级时修改；不要作为源码配置手写到 release 目录。
 - `latest.json` 由 `uot publish` 写到 NAS，是远端发布 manifest；不要打进客户端应用包。
-- `pending-update.json`、`update-result.json` 和 `logs/` 是运行时文件，不要预置。
+- `pending-update.json`、`update-result.json`、`update-status.json` 和 `logs/` 是运行时文件，不要预置。
 
 传入 `--nas-root` 时，UOT 应检查：
 
@@ -135,6 +135,98 @@ uot verify --settings <settings_file> --app <app_id> --platform <platform>
 uot check --settings <settings_file> --app <app_id> --platform <platform> --current-version <current_version>
 ```
 
+历史版本选择：
+
+```powershell
+uot list-remote --settings <settings_file> --app <app_id> --platform <platform>
+uot show-version --settings <settings_file> --app <app_id> --version <target_version> --platform <platform>
+uot prepare-version --settings <settings_file> --app <app_id> --version <target_version> --platform <platform> --download-dir updates
+```
+
+发布策略：
+
+```powershell
+uot publish --settings <settings_file> --app <app_id> --version <target_version> --package <package.zip> --requires-confirmation --rollout-percent 25 --data-schema-version 3
+uot list-remote --settings <settings_file> --app <app_id> --platform <platform> --include-hidden
+```
+
+可选策略包括 `--allow-downgrade`、`--hidden`、`--requires-confirmation`、`--rollout-percent 0..100` 和 `--data-schema-version <int>`。`hidden` 版本默认不会出现在普通 `list-remote`，也不会被普通 `check` 当作可用更新；运维可显式 `--include-hidden` 后再选择版本。
+
+签名发布：
+
+```powershell
+uot keygen --output secrets\uot-signing.key --public-output config\uot-signing.pub
+uot publish --settings <settings_file> --app <app_id> --version <target_version> --package <package.zip> --sign-key secrets\uot-signing.key --key-id release
+uot verify --settings <settings_file> --app <app_id> --signature-key config\uot-signing.pub
+```
+
+`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会写入 manifest `signature`；`verify --signature-key`、`install-prepared --signature-key` 和 `apply-update --signature-key` 会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。
+
+`prepare-version` 只复制并校验指定版本包，不直接修改安装根或 `current.json`。如果使用 UOT 标准 runtime，可以继续执行：
+
+```powershell
+uot install-prepared --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --dry-run
+uot install-prepared --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub
+uot apply-update --pending <install_root>\pending-update.json --signature-key config\uot-signing.pub
+uot rollback --install-root <install_root>
+```
+
+最终应用内的独立 updater 可使用更窄的 `uot-updater` 入口：
+
+```powershell
+uot write-updater-spec --output-dir build\updater --name <updater_name>
+python -m PyInstaller --noconfirm build\updater\<updater_name>.spec
+uot assemble-pyinstaller --version <target_version> --product-name <product_name> --settings <settings_file> --updater-bundle dist\<updater_name> --force
+```
+
+`--updater-bundle` 可以指向 onefile 文件或 onedir 目录；装配后会复制到安装根 `updater/`。完整安装包应携带 `updater/`，升级 zip 不应预置远端 `latest.json` 或运行态 `pending-update.json`、`update-result.json`、`update-status.json`。
+
+```powershell
+uot-updater install --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --wait-pid <old_gui_pid> --wait-timeout 60 --restart
+uot-updater apply --pending <install_root>\pending-update.json --signature-key config\uot-signing.pub --restart
+uot-updater rollback --install-root <install_root>
+uot-updater launch-current --install-root <install_root>
+```
+
+`install-prepared` 和 `apply-update` 会校验包大小与 SHA-256，安全解压到 `releases/<target_version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 会创建 `update.lock` 防止并发更新；失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段是 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是 UI 阶段提示，不是下载字节进度。`--wait-pid` 等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT`；`--restart` 会切换后启动当前入口并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度要由 updater 窗口或外部轮询进程读取状态文件。自定义 updater 仍可只复用 `prepare-version` 和 SDK。
+`uot publish` 会维护 `versions.json` 版本索引；`list-remote` 优先读取索引，索引不存在时回退扫描 `v<version>` 目录。
+
+诊断包：
+
+```powershell
+uot doctor --install-root <install_root> --output diagnostics\doctor.json --archive diagnostics\doctor.zip
+```
+
+`doctor` 会收集安装根关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock`、已安装版本列表和日志摘要。诊断包不包含 `config/settings*.json` 或签名私钥。
+
+旧安装根迁移：
+
+```powershell
+uot write-migration-package --output-dir dist\<product_name>_migration_v<current_version> --app <app_id> --version <current_version> --entry-name <app_exe> --platform <platform> --updater-bundle dist\<updater_name> --settings <settings_file> --endpoint <endpoint_file>
+uot verify-migration-package --package-dir dist\<product_name>_migration_v<current_version>
+uot migrate-install-root --install-root <install_root> --version <current_version> --entry-name <app_exe> --app <app_id> --platform <platform> --dry-run
+uot migrate-install-root --install-root <install_root> --version <current_version> --entry-name <app_exe> --app <app_id> --platform <platform>
+```
+
+迁移会把旧安装根中的应用文件复制到 `releases/<current_version>/` 并写入 `current.json`，但不会删除旧根目录文件。运行态文件如 `update-result.json`、`update-status.json`、`pending-update.json`、`update.lock`、`logs/` 不会复制进 release。
+
+本地已安装版本切换：
+
+```powershell
+uot list-installed --install-root <install_root>
+uot switch-installed --install-root <install_root> --version <target_version>
+```
+
+`switch-installed` 只适用于 `releases/<target_version>/<app_exe>` 已存在的版本。它会原子更新安装根 `current.json` 并记录 `previous_version`，但不下载、不解压、不重启 GUI。
+
+打包边界：
+
+- `update-endpoint.json` 应打进应用包。
+- `current.json` 属于安装根运行状态，首包带初始版本，后续由 updater/runtime 修改。
+- `config/settings*.json` 通常只用于构建和发布，不应带 NAS 敏感配置进入最终用户包。
+- `latest.json` 和 `versions.json` 只属于 NAS 发布目录。
+- `pending-update.json`、`update-result.json` 和 `update-status.json` 是运行时文件。
+
 传入 `--platform` 时，UOT 会按平台隔离 manifest 和包体，避免 Windows/macOS/Linux 同版本包互相覆盖。NAS 目录通常应包含：
 
 ```text
@@ -142,7 +234,8 @@ uot check --settings <settings_file> --app <app_id> --platform <platform> --curr
 └── <app_id>\
     ├── stable\
     │   └── <platform>\
-    │       └── latest.json
+    │       ├── latest.json
+    │       └── versions.json
     └── v<target_version>\
         └── <platform>\
             ├── latest.json
@@ -163,6 +256,7 @@ dist\<product_name>_install_v<current_version>\<app_exe>
 - 升级完成后 GUI 可重新进入新版本。
 - 安装根 `current.json` 的 `version` 已切到 `<target_version>`。
 - 安装根 `update-result.json` 的 `success` 为 `true`。
+- 安装根 `update-status.json` 的 `phase` 为 `success`；失败时 GUI 能在下次启动展示 `message`。
 - `logs/update.log` 有安装成功记录。
 - `logs/launcher.log` 有版本切换或重启记录。
 

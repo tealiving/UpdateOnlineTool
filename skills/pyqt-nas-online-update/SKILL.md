@@ -38,9 +38,10 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Prefer a project update endpoint file: `update-endpoint.json`.
    - Use `uot init` with `--nas-root` so NAS read/write checks run.
    - Use `--skip-nas-check` only for offline scaffolding.
+   - Use `uot migrate-install-root` when converting an existing flat install directory into `releases/<version>` plus `current.json`.
    - Package `update-endpoint.json` with the app when the GUI reads it at runtime.
    - Pass `config/settings.json` to `uot assemble-pyinstaller --settings`; if not using UOT assembly, copy it to the equivalent runtime config path yourself.
-   - Do not prepackage `latest.json`, `pending-update.json`, `update-result.json`, or logs. `current.json` is generated in the assembled install root, not maintained as source config.
+   - Do not prepackage `latest.json`, `pending-update.json`, `update-result.json`, `update-status.json`, or logs. `current.json` is generated in the assembled install root, not maintained as source config.
 
 4. Build and assemble:
    - Build with PyInstaller from the project root.
@@ -53,14 +54,31 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Compress the update directory contents, not the whole install directory.
    - Publish the package to NAS with `uot publish`; include `--platform <platform>` for multi-platform projects.
    - Verify NAS metadata and package integrity with `uot verify`; include the same platform when used.
+   - Use `uot keygen --public-output <public_key>` once per release trust domain, `uot publish --sign-key <private_key>`, and `uot verify --signature-key <public_key>` when manifest tamper detection is required.
    - Check that NAS contains channel `latest.json` and versioned `package.zip`, under the platform subdirectory when platform is set.
+   - Use `uot list-remote`, `uot show-version`, and `uot prepare-version` when the GUI needs a historical version picker.
+   - Use publish policy flags when needed: `--allow-downgrade`, `--hidden`, `--requires-confirmation`, `--rollout-percent`, and `--data-schema-version`.
+   - Use `uot list-remote --include-hidden` for operator-only version pickers; hidden versions are filtered from normal lists and normal update checks.
+   - Expect `uot publish` to maintain `versions.json`; `list-remote` falls back to scanning `v<version>` directories when the index is absent.
+   - Treat `prepare-version` as copy-and-verify only; use `uot install-prepared` or `uot apply-update` when the project wants UOT's standard runtime to install the selected package and change `current.json`.
+   - Prefer packaging `uot-updater` as the final application updater executable; use `uot write-updater-spec` to generate its PyInstaller spec, then pass the built artifact to `uot assemble-pyinstaller --updater-bundle <path>`. Keep full `uot` for developer, CI, and release-operator workflows.
+   - Use `uot install-prepared --signature-key <key> --dry-run` before applying a package in automation; runtime uses `update.lock` to reject concurrent updates, writes `update-result.json` for successful and failed installs, and refreshes `update-status.json` with phase-level UI status.
+   - Use `--wait-pid <old_gui_pid> --wait-timeout <seconds> --restart` when the standard runtime should wait for the old GUI, install the selected release, and restart the current entry.
+   - Keep `latest.json` and `versions.json` on NAS only. Bundle `update-endpoint.json` into the app; keep `config/settings*.json` out of final user packages unless it is a deliberately generated runtime-safe settings file. Treat `update-status.json` as runtime state under the install root, not as a packaged file.
 
 6. Test update behavior:
    - Start from an older install root.
+   - For legacy flat installs, generate and verify a migration package with `uot write-migration-package` and `uot verify-migration-package`, then run `uot migrate-install-root --dry-run` before enabling the new runtime flow.
+   - Use `uot list-installed` to inspect local releases when validating rollback or local version switching.
+   - Use `uot switch-installed` only when the target release already exists under the install root.
+   - Use `uot rollback` after a switch or runtime install when `current.json.previous_version` should become active again.
    - Check that update discovery sees the target version.
    - Trigger update from GUI or CLI.
    - Confirm `current.json` points to the new version.
    - Confirm `update-result.json.success` is true.
+   - Confirm `update-status.json.phase` is `success`; on failure, the GUI should read `phase`, `message`, `version`, and `previous_version` on next launch. Live progress after the old GUI exits requires an updater-owned window or polling process.
+   - Confirm no stale `update.lock` remains after a successful or failed runtime update.
+   - Use `uot doctor --install-root <install_root> --archive <doctor.zip>` to collect a support bundle when an update fails.
    - Inspect updater and launcher logs if the GUI does not restart or the version does not switch.
 
 ## References

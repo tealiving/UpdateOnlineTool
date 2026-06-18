@@ -1,0 +1,612 @@
+"""标准 updater runtime。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+from typing import Any
+from uuid import uuid4
+
+from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.installed import switch_installed_version
+from update_online_tool.manifest import UpdateManifest
+
+
+@dataclass(frozen=True)
+class RuntimeResult:
+    """updater runtime 执行结果。"""
+
+    success: bool
+    action: str
+    version: str
+    previous_version: str
+    release_dir: Path
+    message: str
+    restarted_pid: int | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        """转换为 update-result.json 负载。"""
+        payload: dict[str, object] = {
+            "success": self.success,
+            "action": self.action,
+            "version": self.version,
+            "previous_version": self.previous_version,
+            "release_dir": str(self.release_dir),
+            "message": self.message,
+        }
+        if self.restarted_pid is not None:
+            payload["restarted_pid"] = self.restarted_pid
+        return payload
+
+
+@dataclass(frozen=True)
+class RuntimeStatus:
+    """updater runtime 阶段状态。"""
+
+    phase: str
+    percent: int
+    message: str
+    version: str
+    previous_version: str
+    action: str = "install_prepared"
+    error: str = ""
+
+    def to_payload(self) -> dict[str, object]:
+        """转换为 update-status.json 负载。"""
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "phase": self.phase,
+            "percent": max(0, min(100, int(self.percent))),
+            "message": self.message,
+            "version": self.version,
+            "previous_version": self.previous_version,
+            "action": self.action,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if self.error:
+            payload["error"] = self.error
+        return payload
+
+
+def install_prepared_package(
+    *,
+    install_root: Path,
+    package_path: Path,
+    manifest: UpdateManifest,
+    entry_name: str = "",
+    switch_current: bool = True,
+    force: bool = False,
+    dry_run: bool = False,
+    wait_pid: int | None = None,
+    wait_timeout: float = 60.0,
+    restart: bool = False,
+) -> RuntimeResult:
+    """安装一个已准备好的升级包到 releases/<version>。
+
+    :param install_root: 安装根目录。
+    :param package_path: 本地升级包。
+    :param manifest: 对应 manifest。
+    :param entry_name: release 入口名；为空时从 current.json 推断。
+    :param switch_current: 安装后是否切换 current.json。
+    :param force: 目标 release 已存在时是否覆盖。
+    :param dry_run: 只校验安装计划，不写入 release、current.json 或 update-result.json。
+    :param wait_pid: 安装前等待退出的旧进程 PID。
+    :param wait_timeout: 等待旧进程退出的超时时间，单位秒。
+    :param restart: 安装成功后启动 current.json 指向的入口。
+    :return: runtime 结果。
+    """
+    root = Path(install_root)
+    package = Path(package_path)
+    previous_version = _current_version(root)
+    releases_root = root / "releases"
+    target_release_dir = releases_root / manifest.version
+    temp_release_dir = releases_root / f".{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+    try:
+        if restart and not switch_current:
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "restart requires switching current.json")
+        if wait_pid is not None and not dry_run:
+            write_update_status(
+                root,
+                RuntimeStatus(
+                    phase="waiting_old_process",
+                    percent=10,
+                    message=f"waiting for old process {wait_pid} to exit",
+                    version=manifest.version,
+                    previous_version=previous_version,
+                ),
+            )
+            wait_for_process_exit(pid=wait_pid, timeout_seconds=wait_timeout)
+        with _runtime_lock(root, action="install_prepared", dry_run=dry_run):
+            if not dry_run:
+                write_update_status(
+                    root,
+                    RuntimeStatus(
+                        phase="verifying",
+                        percent=20,
+                        message="verifying package",
+                        version=manifest.version,
+                        previous_version=previous_version,
+                    ),
+                )
+            _verify_package(package, manifest)
+            resolved_entry_name = _resolve_entry_name(root, entry_name)
+            if target_release_dir.exists() and not force:
+                raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release already exists: {target_release_dir}")
+            if dry_run:
+                _verify_zip_plan(package, resolved_entry_name)
+                return RuntimeResult(
+                    success=True,
+                    action="install_prepared",
+                    version=manifest.version,
+                    previous_version=previous_version,
+                    release_dir=target_release_dir,
+                    message="dry-run ok",
+                )
+            write_update_status(
+                root,
+                RuntimeStatus(
+                    phase="extracting",
+                    percent=45,
+                    message="extracting package",
+                    version=manifest.version,
+                    previous_version=previous_version,
+                ),
+            )
+            _extract_zip_safe(package, temp_release_dir)
+            _ensure_release_entry(temp_release_dir, resolved_entry_name)
+            if target_release_dir.exists():
+                shutil.rmtree(target_release_dir)
+            temp_release_dir.replace(target_release_dir)
+            if switch_current:
+                write_update_status(
+                    root,
+                    RuntimeStatus(
+                        phase="switching",
+                        percent=75,
+                        message="switching current release",
+                        version=manifest.version,
+                        previous_version=previous_version,
+                    ),
+                )
+                switch_installed_version(
+                    install_root=root,
+                    version=manifest.version,
+                    entry_name=resolved_entry_name,
+                    app_id=manifest.app_id,
+                    platform=manifest.platform,
+                )
+            result = RuntimeResult(
+                success=True,
+                action="install_prepared",
+                version=manifest.version,
+                previous_version=previous_version,
+                release_dir=target_release_dir,
+                message="installed",
+            )
+            if restart:
+                write_update_status(
+                    root,
+                    RuntimeStatus(
+                        phase="restarting",
+                        percent=90,
+                        message="restarting current release",
+                        version=manifest.version,
+                        previous_version=previous_version,
+                    ),
+                )
+                try:
+                    process = launch_current(install_root=root)
+                except OSError as exc:
+                    raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}") from exc
+                result = RuntimeResult(
+                    success=True,
+                    action="install_prepared",
+                    version=manifest.version,
+                    previous_version=previous_version,
+                    release_dir=target_release_dir,
+                    message="installed and restarted",
+                    restarted_pid=process.pid,
+                )
+            write_update_result(root, result)
+            write_update_status(
+                root,
+                RuntimeStatus(
+                    phase="success",
+                    percent=100,
+                    message=result.message,
+                    version=manifest.version,
+                    previous_version=previous_version,
+                ),
+            )
+            return result
+    except Exception as exc:
+        if temp_release_dir.exists():
+            shutil.rmtree(temp_release_dir)
+        if isinstance(exc, UpdateError):
+            if not dry_run and exc.code is not UpdateErrorCode.UPDATE_LOCKED:
+                write_update_result(
+                    root,
+                    _failure_result("install_prepared", manifest.version, previous_version, target_release_dir, exc),
+                )
+                write_update_status(
+                    root,
+                    RuntimeStatus(
+                        phase="failed",
+                        percent=100,
+                        message=str(exc),
+                        version=manifest.version,
+                        previous_version=previous_version,
+                        error=str(exc),
+                    ),
+                )
+            raise
+        wrapped = UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"install failed: {exc}")
+        if not dry_run:
+            write_update_result(
+                root,
+                _failure_result("install_prepared", manifest.version, previous_version, target_release_dir, wrapped),
+            )
+            write_update_status(
+                root,
+                RuntimeStatus(
+                    phase="failed",
+                    percent=100,
+                    message=str(wrapped),
+                    version=manifest.version,
+                    previous_version=previous_version,
+                    error=str(wrapped),
+                ),
+            )
+        raise wrapped from exc
+
+
+def apply_pending_update(
+    *,
+    pending_path: Path,
+    entry_name: str = "",
+    force: bool = False,
+    dry_run: bool = False,
+    wait_pid: int | None = None,
+    wait_timeout: float = 60.0,
+    restart: bool = False,
+) -> RuntimeResult:
+    """读取 pending-update.json 并安装其中声明的包。"""
+    payload = _read_json_object(Path(pending_path), "pending update")
+    package_path = _require_path(payload, "package_path")
+    install_root = _require_path(payload, "install_root")
+    manifest_payload = payload.get("manifest")
+    if not isinstance(manifest_payload, dict):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
+    manifest = UpdateManifest.from_payload(manifest_payload)
+    return install_prepared_package(
+        install_root=install_root,
+        package_path=package_path,
+        manifest=manifest,
+        entry_name=entry_name,
+        switch_current=True,
+        force=force,
+        dry_run=dry_run,
+        wait_pid=wait_pid,
+        wait_timeout=wait_timeout,
+        restart=restart,
+    )
+
+
+def rollback_installation(*, install_root: Path, entry_name: str = "") -> RuntimeResult:
+    """回滚到 current.json 中记录的 previous_version。"""
+    root = Path(install_root)
+    current_version = ""
+    previous_version = ""
+    release_dir = root / "releases"
+    try:
+        with _runtime_lock(root, action="rollback", dry_run=False):
+            current_payload = _read_json_object(root / "current.json", "current.json")
+            current_version = str(current_payload.get("version", "")).strip()
+            previous_version = str(current_payload.get("previous_version", "")).strip()
+            if not previous_version:
+                raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json has no previous_version")
+            switched = switch_installed_version(
+                install_root=root,
+                version=previous_version,
+                entry_name=entry_name,
+            )
+            result = RuntimeResult(
+                success=True,
+                action="rollback",
+                version=switched.version,
+                previous_version=current_version,
+                release_dir=switched.release_dir,
+                message="rolled back",
+            )
+            write_update_result(root, result)
+            return result
+    except UpdateError as exc:
+        if previous_version:
+            release_dir = root / "releases" / previous_version
+        if exc.code is not UpdateErrorCode.UPDATE_LOCKED:
+            write_update_result(root, _failure_result("rollback", previous_version, current_version, release_dir, exc))
+        raise
+
+
+def launch_current(*, install_root: Path) -> subprocess.Popen[bytes]:
+    """启动 current.json 指向的当前版本入口。"""
+    root = Path(install_root)
+    current_payload = _read_json_object(root / "current.json", "current.json")
+    release_dir = str(current_payload.get("release_dir", "")).strip()
+    executable = str(current_payload.get("executable", "")).strip()
+    if not release_dir or not executable:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json must contain release_dir and executable")
+    entry_path = root / release_dir / executable
+    if not entry_path.exists():
+        raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"current entry not found: {entry_path}")
+    if entry_path.is_dir() and entry_path.suffix == ".app" and sys.platform == "darwin":
+        return subprocess.Popen(["open", str(entry_path)], cwd=str(entry_path.parent))
+    return subprocess.Popen([str(entry_path)], cwd=str(entry_path.parent))
+
+
+def wait_for_process_exit(*, pid: int, timeout_seconds: float = 60.0, poll_interval: float = 0.25) -> None:
+    """等待指定进程退出；超时则抛出结构化错误。"""
+    if pid <= 0:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"pid must be positive: {pid}")
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while _is_process_alive(pid):
+        if time.monotonic() >= deadline:
+            raise UpdateError(
+                UpdateErrorCode.PROCESS_TIMEOUT,
+                f"process {pid} did not exit within {timeout_seconds:g}s; please close the application and retry",
+            )
+        time.sleep(max(0.01, float(poll_interval)))
+
+
+def _is_process_alive(pid: int) -> bool:
+    """跨平台检查进程是否仍存在。"""
+    if sys.platform == "win32":
+        return _is_windows_process_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _is_windows_process_alive(pid: int) -> bool:
+    """用 Win32 API 检查进程是否仍处于 STILL_ACTIVE。"""
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    error_invalid_parameter = 87
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+    if not handle:
+        error_code = ctypes.get_last_error()
+        if error_code == error_invalid_parameter:
+            return False
+        return True
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def write_update_result(install_root: Path, result: RuntimeResult) -> None:
+    """写入 update-result.json。"""
+    path = Path(install_root) / "update-result.json"
+    path.write_text(json.dumps(result.to_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def write_update_status(install_root: Path, status: RuntimeStatus) -> None:
+    """写入 update-status.json。"""
+    path = Path(install_root) / "update-status.json"
+    path.write_text(json.dumps(status.to_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+@contextmanager
+def _runtime_lock(install_root: Path, *, action: str, dry_run: bool) -> Iterator[None]:
+    """用 update.lock 防止同一安装根并发更新。"""
+    if dry_run:
+        yield
+        return
+    root = Path(install_root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "update.lock"
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(lock_path, flags)
+    except FileExistsError as exc:
+        raise UpdateError(UpdateErrorCode.UPDATE_LOCKED, f"update lock exists: {lock_path}") from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
+            lock_file.write(json.dumps({"pid": os.getpid(), "action": action}, ensure_ascii=False) + "\n")
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            return
+
+
+def _failure_result(
+    action: str,
+    version: str,
+    previous_version: str,
+    release_dir: Path,
+    exc: UpdateError,
+) -> RuntimeResult:
+    """构造失败 update-result.json 结果。"""
+    return RuntimeResult(
+        success=False,
+        action=action,
+        version=version,
+        previous_version=previous_version,
+        release_dir=release_dir,
+        message=str(exc),
+    )
+
+
+def _verify_package(package_path: Path, manifest: UpdateManifest) -> None:
+    """按 manifest 校验本地包大小和 SHA-256。"""
+    if not package_path.is_file():
+        raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {package_path}")
+    actual_size = package_path.stat().st_size
+    if actual_size != manifest.package.size:
+        raise UpdateError(
+            UpdateErrorCode.PACKAGE_SIZE_MISMATCH,
+            f"package.size {manifest.package.size} != actual {actual_size}",
+        )
+    digest = hashlib.sha256()
+    with package_path.open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual_sha256 = digest.hexdigest()
+    if actual_sha256 != manifest.package.sha256.lower():
+        raise UpdateError(
+            UpdateErrorCode.PACKAGE_HASH_MISMATCH,
+            f"package.sha256 {manifest.package.sha256.lower()} != actual {actual_sha256}",
+        )
+
+
+def _extract_zip_safe(package_path: Path, target_dir: Path) -> None:
+    """安全解压 zip，拒绝绝对路径和目录穿越。"""
+    target_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        with zipfile.ZipFile(package_path) as archive:
+            for member in archive.infolist():
+                parts = _safe_zip_member_parts(member.filename)
+                extracted_path = target_dir.joinpath(*parts)
+                mode = member.external_attr >> 16
+                if member.is_dir():
+                    extracted_path.mkdir(parents=True, exist_ok=True)
+                    if mode:
+                        extracted_path.chmod(mode)
+                    continue
+                extracted_path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source_file, extracted_path.open("wb") as target_file:
+                    shutil.copyfileobj(source_file, target_file)
+                if mode:
+                    extracted_path.chmod(mode)
+    except zipfile.BadZipFile as exc:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"package is not a valid zip: {package_path}") from exc
+
+
+def _verify_zip_plan(package_path: Path, entry_name: str) -> None:
+    """校验 zip 可安全解压且包含 release 入口。"""
+    try:
+        with zipfile.ZipFile(package_path) as archive:
+            member_names = {_normalized_zip_member_name(member.filename) for member in archive.infolist()}
+            for member in archive.infolist():
+                _safe_zip_member_parts(member.filename)
+    except zipfile.BadZipFile as exc:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"package is not a valid zip: {package_path}") from exc
+    normalized_entry = _normalized_zip_member_name(entry_name)
+    if normalized_entry in member_names:
+        return
+    if normalized_entry.endswith(".app"):
+        macos_prefix = f"{normalized_entry}/Contents/MacOS/"
+        if any(name.startswith(macos_prefix) and name != macos_prefix for name in member_names):
+            return
+    raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release entry not found in package: {entry_name}")
+
+
+def _safe_zip_member_parts(member_name: str) -> tuple[str, ...]:
+    """返回安全 zip 成员路径，拒绝绝对路径、盘符和目录穿越。"""
+    normalized_name = str(member_name or "").replace("\\", "/")
+    pure_path = PurePosixPath(normalized_name)
+    if pure_path.is_absolute():
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
+    parts = tuple(part for part in pure_path.parts if part)
+    if not parts:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
+    if ".." in parts or any(part == "" for part in parts):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
+    if ":" in parts[0]:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
+    return parts
+
+
+def _normalized_zip_member_name(member_name: str) -> str:
+    """把 zip 成员名规范为 POSIX 路径。"""
+    return str(member_name or "").replace("\\", "/").strip("/")
+
+
+def _ensure_release_entry(release_dir: Path, entry_name: str) -> None:
+    """校验 release 入口存在。"""
+    entry_path = release_dir / entry_name
+    if entry_path.is_file():
+        return
+    if entry_path.is_dir() and entry_path.suffix == ".app":
+        macos_dir = entry_path / "Contents" / "MacOS"
+        if macos_dir.is_dir() and any(candidate.is_file() for candidate in macos_dir.iterdir()):
+            return
+    raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release entry not found in package: {entry_path}")
+
+
+def _resolve_entry_name(install_root: Path, entry_name: str) -> str:
+    """解析 release 入口名。"""
+    explicit = str(entry_name or "").strip()
+    if explicit:
+        return explicit
+    payload = _read_json_object(Path(install_root) / "current.json", "current.json")
+    entry_payload = payload.get("entry")
+    if isinstance(entry_payload, dict):
+        entry_path = entry_payload.get("path")
+        if isinstance(entry_path, str) and entry_path.strip():
+            return entry_path.strip()
+    executable = payload.get("executable")
+    if isinstance(executable, str) and executable.strip():
+        return executable.strip()
+    raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "entry_name is required when current.json has no entry")
+
+
+def _current_version(install_root: Path) -> str:
+    """读取当前版本；不存在时返回空字符串。"""
+    current_path = Path(install_root) / "current.json"
+    if not current_path.is_file():
+        return ""
+    payload = _read_json_object(current_path, "current.json")
+    return str(payload.get("version", "")).strip()
+
+
+def _read_json_object(path: Path, context: str) -> dict[str, Any]:
+    """读取 JSON 对象。"""
+    if not path.is_file():
+        raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"{context} not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{context} is not valid JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{context} must be a JSON object")
+    return payload
+
+
+def _require_path(payload: dict[str, Any], key: str) -> Path:
+    """从 JSON 对象读取非空路径。"""
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string")
+    return Path(value)

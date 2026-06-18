@@ -12,12 +12,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from update_online_tool.diagnostics import collect_diagnostics, write_diagnostic_archive
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.installed import list_installed_versions, migrate_install_root, switch_installed_version
 from update_online_tool.manifest import UpdateManifest
+from update_online_tool.migration_package import verify_migration_package, write_migration_package_template
 from update_online_tool.nas import NasReleaseSource
-from update_online_tool.pyinstaller_assembly import assemble_pyinstaller_release, default_pyinstaller_assembly_config
+from update_online_tool.pyinstaller_assembly import (
+    assemble_pyinstaller_release,
+    default_pyinstaller_assembly_config,
+    write_updater_pyinstaller_spec,
+)
+from update_online_tool.runtime import (
+    apply_pending_update,
+    install_prepared_package,
+    launch_current,
+    rollback_installation,
+)
 from update_online_tool.service import UpdateService
 from update_online_tool.settings import UpdateToolSettings, user_settings_path
+from update_online_tool.signature import (
+    derive_ed25519_public_key_pem,
+    generate_ed25519_private_key_pem,
+    generate_hmac_key,
+    sign_manifest_payload_with_key_file,
+    verify_manifest_signature_with_key_file,
+)
+from update_online_tool.versioning import parse_version_tuple
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "keygen":
+            return _keygen(args)
         if args.command == "init":
             return _init(args)
         if args.command == "publish":
@@ -37,6 +60,34 @@ def main(argv: list[str] | None = None) -> int:
             return _verify(args)
         if args.command == "check":
             return _check(args)
+        if args.command == "list-remote":
+            return _list_remote(args)
+        if args.command == "show-version":
+            return _show_version(args)
+        if args.command == "prepare-version":
+            return _prepare_version(args)
+        if args.command == "list-installed":
+            return _list_installed(args)
+        if args.command == "switch-installed":
+            return _switch_installed(args)
+        if args.command == "migrate-install-root":
+            return _migrate_install_root(args)
+        if args.command == "write-migration-package":
+            return _write_migration_package(args)
+        if args.command == "verify-migration-package":
+            return _verify_migration_package(args)
+        if args.command == "install-prepared":
+            return _install_prepared(args)
+        if args.command == "apply-update":
+            return _apply_update(args)
+        if args.command == "rollback":
+            return _rollback(args)
+        if args.command == "launch-current":
+            return _launch_current(args)
+        if args.command == "doctor":
+            return _doctor(args)
+        if args.command == "write-updater-spec":
+            return _write_updater_spec(args)
         if args.command == "assemble-pyinstaller":
             return _assemble_pyinstaller(args)
     except UpdateError as exc:
@@ -53,6 +104,17 @@ def _build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(prog="uot", description="NAS online updater CLI.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    keygen = subparsers.add_parser("keygen", help="Generate a manifest signing key.")
+    keygen.add_argument("--output", required=True, type=Path, help="Signing key output path.")
+    keygen.add_argument(
+        "--algorithm",
+        default="ed25519",
+        choices=["ed25519", "hmac-sha256"],
+        help="Signing algorithm. Defaults to Ed25519.",
+    )
+    keygen.add_argument("--public-output", default=None, type=Path, help="Public key output path for Ed25519.")
+    keygen.add_argument("--force", action="store_true", help="Overwrite existing key file.")
 
     init = subparsers.add_parser("init", help="Generate a project update-endpoint.json.")
     init.add_argument("--app", default="", help="Application id. Defaults to current directory name.")
@@ -81,12 +143,20 @@ def _build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--min-supported-version", default="", help="Minimum supported current version.")
     publish.add_argument("--mandatory", action="store_true", help="Mark this update as mandatory.")
     publish.add_argument("--published-at", default="", help="ISO timestamp. Defaults to current UTC time.")
+    publish.add_argument("--allow-downgrade", action="store_true", help="Allow switching down to this version.")
+    publish.add_argument("--hidden", action="store_true", help="Hide this version from normal version lists.")
+    publish.add_argument("--requires-confirmation", action="store_true", help="Require user confirmation before install.")
+    publish.add_argument("--rollout-percent", default=100, type=int, help="Rollout percentage from 0 to 100.")
+    publish.add_argument("--data-schema-version", default=0, type=int, help="Application data schema version.")
+    publish.add_argument("--sign-key", default=None, type=Path, help="Signing key file used to sign latest.json.")
+    publish.add_argument("--key-id", default="default", help="Signature key id written to latest.json.")
 
     verify = subparsers.add_parser("verify", help="Verify one app manifest and package.")
     _add_settings_arg(verify)
     verify.add_argument("--app", required=True, help="Application id.")
     verify.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     verify.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+    verify.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
 
     check = subparsers.add_parser("check", help="Check whether an app version has an update.")
     _add_settings_arg(check)
@@ -95,6 +165,108 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     check.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
     check.add_argument("--skipped-version", default="", help="Skipped version.")
+
+    list_remote = subparsers.add_parser("list-remote", help="List published versions on the NAS release root.")
+    _add_settings_arg(list_remote)
+    list_remote.add_argument("--app", required=True, help="Application id.")
+    list_remote.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
+    list_remote.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+    list_remote.add_argument("--include-hidden", action="store_true", help="Include hidden versions.")
+
+    show_version = subparsers.add_parser("show-version", help="Print one published version manifest.")
+    _add_settings_arg(show_version)
+    show_version.add_argument("--app", required=True, help="Application id.")
+    show_version.add_argument("--version", required=True, help="Release version.")
+    show_version.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
+    show_version.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+
+    prepare_version = subparsers.add_parser("prepare-version", help="Copy and verify one published version package.")
+    _add_settings_arg(prepare_version)
+    prepare_version.add_argument("--app", required=True, help="Application id.")
+    prepare_version.add_argument("--version", required=True, help="Release version.")
+    prepare_version.add_argument("--download-dir", required=True, type=Path, help="Local package download directory.")
+    prepare_version.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
+    prepare_version.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+
+    list_installed = subparsers.add_parser("list-installed", help="List releases under an assembled install root.")
+    list_installed.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
+    list_installed.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+
+    switch_installed = subparsers.add_parser("switch-installed", help="Switch current.json to an installed release.")
+    switch_installed.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
+    switch_installed.add_argument("--version", required=True, help="Installed release version.")
+    switch_installed.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+    switch_installed.add_argument("--app", default="", help="Application id. Defaults to current.json app_id.")
+    switch_installed.add_argument("--platform", default="", help="Platform. Defaults to current.json entry.platform.")
+
+    migrate_install = subparsers.add_parser("migrate-install-root", help="Migrate a flat install root to releases/current.json.")
+    migrate_install.add_argument("--install-root", required=True, type=Path, help="Legacy install root.")
+    migrate_install.add_argument("--version", required=True, help="Version to assign to the migrated release.")
+    migrate_install.add_argument("--entry-name", required=True, help="Existing legacy entry name in the install root.")
+    migrate_install.add_argument("--app", required=True, help="Application id.")
+    migrate_install.add_argument("--platform", default="", help="Optional platform: windows, macos, or linux.")
+    migrate_install.add_argument("--force", action="store_true", help="Replace an existing target release directory.")
+    migrate_install.add_argument("--dry-run", action="store_true", help="Show migration plan without writing files.")
+
+    migration_package = subparsers.add_parser(
+        "write-migration-package",
+        help="Write a legacy-client migration package template.",
+    )
+    migration_package.add_argument("--output-dir", required=True, type=Path, help="Migration package output directory.")
+    migration_package.add_argument("--app", required=True, help="Application id.")
+    migration_package.add_argument("--version", required=True, help="Version assigned to the legacy install root.")
+    migration_package.add_argument("--entry-name", required=True, help="Legacy install-root entry name.")
+    migration_package.add_argument("--platform", default="", help="Optional platform: windows, macos, or linux.")
+    migration_package.add_argument("--updater-bundle", default=None, type=Path, help="Built updater artifact to include.")
+    migration_package.add_argument("--settings", default=None, type=Path, help="settings.json to include.")
+    migration_package.add_argument("--endpoint", default=None, type=Path, help="update-endpoint.json to include.")
+    migration_package.add_argument("--force", action="store_true", help="Overwrite existing output directory.")
+
+    verify_migration = subparsers.add_parser("verify-migration-package", help="Verify a migration package template.")
+    verify_migration.add_argument("--package-dir", required=True, type=Path, help="Migration package directory.")
+
+    install_prepared = subparsers.add_parser("install-prepared", help="Install a verified package into releases.")
+    install_prepared.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
+    install_prepared.add_argument("--package", required=True, type=Path, help="Prepared local package zip.")
+    install_prepared.add_argument("--manifest", required=True, type=Path, help="Manifest JSON for the package.")
+    install_prepared.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+    install_prepared.add_argument("--no-switch", action="store_true", help="Install release without switching current.json.")
+    install_prepared.add_argument("--force", action="store_true", help="Replace an existing release directory.")
+    install_prepared.add_argument("--dry-run", action="store_true", help="Validate the install plan without writing files.")
+    install_prepared.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
+    install_prepared.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before install.")
+    install_prepared.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
+    install_prepared.add_argument("--restart", action="store_true", help="Restart the current release after install.")
+
+    apply_update = subparsers.add_parser("apply-update", help="Apply pending-update.json through the standard runtime.")
+    apply_update.add_argument("--pending", required=True, type=Path, help="pending-update.json path.")
+    apply_update.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+    apply_update.add_argument("--force", action="store_true", help="Replace an existing release directory.")
+    apply_update.add_argument("--dry-run", action="store_true", help="Validate the pending update without writing files.")
+    apply_update.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
+    apply_update.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before install.")
+    apply_update.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
+    apply_update.add_argument("--restart", action="store_true", help="Restart the current release after install.")
+
+    rollback = subparsers.add_parser("rollback", help="Rollback current.json to previous_version.")
+    rollback.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
+    rollback.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+
+    launch_current_parser = subparsers.add_parser("launch-current", help="Launch the current release entry.")
+    launch_current_parser.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
+
+    doctor = subparsers.add_parser("doctor", help="Collect an install-root diagnostic report.")
+    doctor.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
+    doctor.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+    doctor.add_argument("--output", default=None, type=Path, help="Optional JSON report output path.")
+    doctor.add_argument("--archive", default=None, type=Path, help="Optional diagnostic zip output path.")
+
+    updater_spec = subparsers.add_parser("write-updater-spec", help="Write a PyInstaller spec for uot-updater.")
+    updater_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
+    updater_spec.add_argument("--name", default="uot-updater", help="PyInstaller executable name.")
+    updater_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
+    updater_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
+    updater_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
 
     assemble = subparsers.add_parser("assemble-pyinstaller", help="Assemble PyInstaller GUI and launcher bundles.")
     assemble.add_argument("--version", required=True, help="Release version.")
@@ -106,8 +278,32 @@ def _build_parser() -> argparse.ArgumentParser:
     assemble.add_argument("--release-entry-name", default="", help="Source GUI entry name inside the release bundle.")
     assemble.add_argument("--launcher-entry-name", default="", help="Source launcher entry name inside the launcher bundle.")
     assemble.add_argument("--settings", default=None, type=Path, help="Project settings.json to bundle.")
+    assemble.add_argument("--updater-bundle", default=None, type=Path, help="Built uot-updater onefile or onedir artifact.")
+    assemble.add_argument("--updater-name", default="", help="Target name under install_root/updater/. Defaults to source name.")
     assemble.add_argument("--force", action="store_true", help="Overwrite existing output directories.")
     return parser
+
+
+def _keygen(args: argparse.Namespace) -> int:
+    """生成 manifest 签名密钥。"""
+    output = Path(args.output)
+    if output.exists() and not bool(args.force):
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"key output already exists: {output}")
+    public_output = Path(args.public_output) if args.public_output is not None else None
+    if public_output is not None and public_output.exists() and not bool(args.force):
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"public key output already exists: {public_output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if args.algorithm == "ed25519":
+        output.write_text(generate_ed25519_private_key_pem(), encoding="utf-8")
+        if public_output is not None:
+            public_output.parent.mkdir(parents=True, exist_ok=True)
+            public_output.write_text(derive_ed25519_public_key_pem(output), encoding="utf-8")
+    else:
+        output.write_text(generate_hmac_key() + "\n", encoding="utf-8")
+    print(f"Generated signing key: {output}")
+    if public_output is not None:
+        print(f"Generated public key: {public_output}")
+    return 0
 
 
 def _add_settings_arg(parser: argparse.ArgumentParser) -> None:
@@ -305,9 +501,25 @@ def _publish(args: argparse.Namespace) -> int:
     }
     if platform:
         payload["platform"] = platform
+    payload.update(_manifest_policy_payload(args))
     manifest = UpdateManifest.from_payload(payload)
-    _write_json(source.version_dir(args.app, args.version, platform) / "latest.json", manifest.to_payload())
-    _write_json(source.manifest_path(args.app, channel, platform), manifest.to_payload())
+    manifest_payload = manifest.to_payload()
+    if args.sign_key is not None:
+        manifest_payload = sign_manifest_payload_with_key_file(
+            manifest_payload,
+            key_path=Path(args.sign_key),
+            key_id=args.key_id,
+        )
+    manifest = UpdateManifest.from_payload(manifest_payload)
+    _write_json(source.version_dir(args.app, args.version, platform) / "latest.json", manifest_payload)
+    _write_json(source.manifest_path(args.app, channel, platform), manifest_payload)
+    _update_versions_index(
+        source=source,
+        app_id=args.app,
+        channel=channel,
+        platform=platform,
+        manifest=manifest,
+    )
     print(f"Published {args.app} v{args.version} to {settings.nas_root}")
     return 0
 
@@ -324,7 +536,10 @@ def _verify(args: argparse.Namespace) -> int:
     channel = args.channel or settings.default_channel
     platform = _normalize_optional_platform(args.platform)
     manifest_path = source.manifest_path(args.app, channel, platform)
-    manifest = _load_manifest_file(manifest_path)
+    manifest_payload = _load_manifest_payload(manifest_path)
+    if args.signature_key is not None:
+        verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(args.signature_key))
+    manifest = UpdateManifest.from_payload(manifest_payload)
     if platform and manifest.platform and manifest.platform != platform:
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest platform mismatch: {manifest.platform}")
     package_path = source.resolve_package_path(manifest.package.url)
@@ -366,6 +581,273 @@ def _check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _list_remote(args: argparse.Namespace) -> int:
+    """列出 NAS 历史版本。"""
+    settings = _load_settings_arg(args)
+    channel = args.channel or settings.default_channel
+    platform = _normalize_optional_platform(args.platform)
+    versions = UpdateService(settings).list_remote_versions(
+        app_id=args.app,
+        channel=channel,
+        platform=platform,
+        include_hidden=bool(args.include_hidden),
+    )
+    payload = {
+        "app_id": args.app,
+        "channel": channel,
+        "platform": platform,
+        "versions": [
+            {
+                "version": item.version,
+                "channel": item.channel,
+                "platform": item.platform,
+                "manifest_path": str(item.manifest_path),
+                "package_url": item.manifest.package.url,
+                "package_size": item.manifest.package.size,
+                "package_exists": item.package_exists,
+                "published_at": item.manifest.published_at,
+                "mandatory": item.manifest.mandatory,
+                "allow_downgrade": item.manifest.allow_downgrade,
+                "hidden": item.manifest.hidden,
+                "requires_confirmation": item.manifest.requires_confirmation,
+                "rollout_percent": item.manifest.rollout_percent,
+                "data_schema_version": item.manifest.data_schema_version,
+                "signature_algorithm": item.manifest.signature.algorithm if item.manifest.signature else "",
+                "signature_key_id": item.manifest.signature.key_id if item.manifest.signature else "",
+                "notes": item.manifest.notes,
+            }
+            for item in versions
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _manifest_policy_payload(args: argparse.Namespace) -> dict[str, object]:
+    """从 publish 参数生成 manifest 策略字段。"""
+    payload: dict[str, object] = {}
+    if bool(args.allow_downgrade):
+        payload["allow_downgrade"] = True
+    if bool(args.hidden):
+        payload["hidden"] = True
+    if bool(args.requires_confirmation):
+        payload["requires_confirmation"] = True
+    rollout_percent = int(args.rollout_percent)
+    if rollout_percent != 100:
+        payload["rollout_percent"] = rollout_percent
+    data_schema_version = int(args.data_schema_version)
+    if data_schema_version:
+        payload["data_schema_version"] = data_schema_version
+    return payload
+
+
+def _show_version(args: argparse.Namespace) -> int:
+    """输出指定版本 manifest。"""
+    settings = _load_settings_arg(args)
+    platform = _normalize_optional_platform(args.platform)
+    manifest = UpdateService(settings).get_remote_manifest(
+        app_id=args.app,
+        version=args.version,
+        channel=args.channel or settings.default_channel,
+        platform=platform,
+    )
+    print(json.dumps(manifest.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _prepare_version(args: argparse.Namespace) -> int:
+    """准备指定版本升级包。"""
+    settings = _load_settings_arg(args)
+    platform = _normalize_optional_platform(args.platform)
+    service = UpdateService(settings)
+    manifest = service.get_remote_manifest(
+        app_id=args.app,
+        version=args.version,
+        channel=args.channel or settings.default_channel,
+        platform=platform,
+    )
+    prepared = service.prepare(manifest, Path(args.download_dir))
+    payload = {
+        "app_id": manifest.app_id,
+        "version": manifest.version,
+        "channel": manifest.channel,
+        "platform": manifest.platform,
+        "package_path": str(prepared.package_path),
+        "sha256": prepared.sha256,
+        "verified": prepared.verified,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _list_installed(args: argparse.Namespace) -> int:
+    """列出安装根已安装版本。"""
+    versions = list_installed_versions(install_root=Path(args.install_root), entry_name=args.entry_name)
+    payload = {
+        "install_root": str(Path(args.install_root)),
+        "versions": [
+            {
+                "version": item.version,
+                "release_dir": str(item.release_dir),
+                "entry_path": str(item.entry_path),
+                "entry_exists": item.entry_exists,
+                "entry_kind": item.entry_kind,
+                "is_current": item.is_current,
+            }
+            for item in versions
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _switch_installed(args: argparse.Namespace) -> int:
+    """切换安装根 current.json。"""
+    platform = _normalize_optional_platform(args.platform)
+    switched = switch_installed_version(
+        install_root=Path(args.install_root),
+        version=args.version,
+        entry_name=args.entry_name,
+        app_id=args.app,
+        platform=platform,
+    )
+    payload = {
+        "version": switched.version,
+        "release_dir": str(switched.release_dir),
+        "entry_path": str(switched.entry_path),
+        "entry_kind": switched.entry_kind,
+        "is_current": switched.is_current,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _migrate_install_root(args: argparse.Namespace) -> int:
+    """迁移旧版平铺安装根。"""
+    result = migrate_install_root(
+        install_root=Path(args.install_root),
+        version=args.version,
+        entry_name=args.entry_name,
+        app_id=args.app,
+        platform=_normalize_optional_platform(args.platform),
+        force=bool(args.force),
+        dry_run=bool(args.dry_run),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _write_migration_package(args: argparse.Namespace) -> int:
+    """生成旧客户端迁移包模板。"""
+    result = write_migration_package_template(
+        output_dir=Path(args.output_dir),
+        app_id=args.app,
+        version=args.version,
+        entry_name=args.entry_name,
+        platform=_normalize_optional_platform(args.platform),
+        updater_bundle=args.updater_bundle,
+        settings_path=args.settings,
+        endpoint_path=args.endpoint,
+        force=bool(args.force),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _verify_migration_package(args: argparse.Namespace) -> int:
+    """校验旧客户端迁移包模板。"""
+    result = verify_migration_package(package_dir=Path(args.package_dir))
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0 if result.valid else 1
+
+
+def _install_prepared(args: argparse.Namespace) -> int:
+    """安装已准备的升级包。"""
+    manifest_payload = _load_manifest_payload(Path(args.manifest))
+    if args.signature_key is not None:
+        verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(args.signature_key))
+    manifest = UpdateManifest.from_payload(manifest_payload)
+    result = install_prepared_package(
+        install_root=Path(args.install_root),
+        package_path=Path(args.package),
+        manifest=manifest,
+        entry_name=args.entry_name,
+        switch_current=not bool(args.no_switch),
+        force=bool(args.force),
+        dry_run=bool(args.dry_run),
+        wait_pid=args.wait_pid,
+        wait_timeout=float(args.wait_timeout),
+        restart=bool(args.restart),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _apply_update(args: argparse.Namespace) -> int:
+    """应用 pending-update.json。"""
+    if args.signature_key is not None:
+        _verify_pending_manifest_signature(Path(args.pending), Path(args.signature_key))
+    result = apply_pending_update(
+        pending_path=Path(args.pending),
+        entry_name=args.entry_name,
+        force=bool(args.force),
+        dry_run=bool(args.dry_run),
+        wait_pid=args.wait_pid,
+        wait_timeout=float(args.wait_timeout),
+        restart=bool(args.restart),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _rollback(args: argparse.Namespace) -> int:
+    """回滚到 previous_version。"""
+    result = rollback_installation(
+        install_root=Path(args.install_root),
+        entry_name=args.entry_name,
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _launch_current(args: argparse.Namespace) -> int:
+    """启动当前 release。"""
+    process = launch_current(install_root=Path(args.install_root))
+    print(json.dumps({"pid": process.pid}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    """收集安装根诊断报告。"""
+    report = collect_diagnostics(install_root=Path(args.install_root), entry_name=args.entry_name)
+    if args.archive is not None:
+        archive_path = write_diagnostic_archive(
+            report=report,
+            install_root=Path(args.install_root),
+            archive_path=Path(args.archive),
+        )
+        report["archive"] = str(archive_path)
+    report_text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.output is not None:
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(report_text, encoding="utf-8")
+    print(report_text, end="")
+    return 0
+
+
+def _write_updater_spec(args: argparse.Namespace) -> int:
+    """生成 uot-updater PyInstaller spec。"""
+    result = write_updater_pyinstaller_spec(
+        output_dir=Path(args.output_dir),
+        name=args.name,
+        onefile=bool(args.onefile),
+        console=not bool(args.windowed),
+        force=bool(args.force),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _assemble_pyinstaller(args: argparse.Namespace) -> int:
     """装配 PyInstaller 发布目录。
 
@@ -382,6 +864,8 @@ def _assemble_pyinstaller(args: argparse.Namespace) -> int:
         release_entry_name=args.release_entry_name,
         launcher_entry_name=args.launcher_entry_name,
         settings_path=args.settings,
+        updater_bundle=args.updater_bundle,
+        updater_name=args.updater_name,
         force=bool(args.force),
     )
     result = assemble_pyinstaller_release(config)
@@ -389,6 +873,8 @@ def _assemble_pyinstaller(args: argparse.Namespace) -> int:
     print(f"Assembled update root: {result.update_root}")
     print(f"Launcher executable: {result.launcher_executable}")
     print(f"Release executable: {result.release_executable}")
+    if result.updater_path is not None:
+        print(f"Updater bundle: {result.updater_path}")
     return 0
 
 
@@ -407,12 +893,30 @@ def _load_manifest_file(path: Path) -> UpdateManifest:
     :param path: manifest 路径。
     :return: manifest 模型。
     """
+    return UpdateManifest.from_payload(_load_manifest_payload(path))
+
+
+def _load_manifest_payload(path: Path) -> dict[str, object]:
+    """读取 manifest JSON 字典。"""
     if not path.is_file():
         raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "manifest must be a JSON object")
-    return UpdateManifest.from_payload(payload)
+    return payload
+
+
+def _verify_pending_manifest_signature(pending_path: Path, signature_key: Path) -> None:
+    """校验 pending-update.json 内 manifest 签名。"""
+    if not pending_path.is_file():
+        raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"pending update not found: {pending_path}")
+    payload = json.loads(pending_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending update must be a JSON object")
+    manifest_payload = payload.get("manifest")
+    if not isinstance(manifest_payload, dict):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
+    verify_manifest_signature_with_key_file(manifest_payload, key_path=signature_key)
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
@@ -424,6 +928,53 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _update_versions_index(
+    *,
+    source: NasReleaseSource,
+    app_id: str,
+    channel: str,
+    platform: str,
+    manifest: UpdateManifest,
+) -> None:
+    """更新通道 versions.json 索引。"""
+    index_path = source.versions_index_path(app_id, channel, platform)
+    existing_versions: list[dict[str, object]] = []
+    if index_path.is_file():
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("versions"), list):
+            existing_versions = [item for item in payload["versions"] if isinstance(item, dict)]
+    entry = {
+        "version": manifest.version,
+        "manifest_url": _manifest_url(app_id, manifest.version, platform),
+        "package_url": manifest.package.url,
+        "published_at": manifest.published_at,
+        "mandatory": manifest.mandatory,
+        "allow_downgrade": manifest.allow_downgrade,
+        "hidden": manifest.hidden,
+        "requires_confirmation": manifest.requires_confirmation,
+        "rollout_percent": manifest.rollout_percent,
+        "data_schema_version": manifest.data_schema_version,
+        "notes": manifest.notes,
+    }
+    versions = [item for item in existing_versions if item.get("version") != manifest.version]
+    versions.append(entry)
+    versions = sorted(
+        versions,
+        key=lambda item: parse_version_tuple(str(item.get("version", ""))),
+        reverse=True,
+    )
+    _write_json(
+        index_path,
+        {
+            "schema_version": 1,
+            "app_id": app_id,
+            "channel": channel,
+            "platform": platform,
+            "versions": versions,
+        },
+    )
 
 
 def _package_url(app_id: str, version: str, package_filename: str, platform: str) -> str:
@@ -438,6 +989,13 @@ def _package_url(app_id: str, version: str, package_filename: str, platform: str
     if platform:
         return f"{app_id}/v{version}/{platform}/{package_filename}"
     return f"{app_id}/v{version}/{package_filename}"
+
+
+def _manifest_url(app_id: str, version: str, platform: str) -> str:
+    """生成版本 manifest 相对路径。"""
+    if platform:
+        return f"{app_id}/v{version}/{platform}/latest.json"
+    return f"{app_id}/v{version}/latest.json"
 
 
 def _normalize_optional_platform(platform: str) -> str:

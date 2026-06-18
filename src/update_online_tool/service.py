@@ -13,7 +13,7 @@ from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.nas import NasReleaseSource
 from update_online_tool.settings import UpdateToolSettings
-from update_online_tool.versioning import UpdateDecision, decide_update
+from update_online_tool.versioning import UpdateDecision, decide_update, parse_version_tuple
 
 ProgressCallback = Callable[[int, int], None]
 
@@ -33,6 +33,27 @@ class CheckUpdateResult:
     manifest: UpdateManifest
     package_size: int
     notes: str
+
+
+@dataclass(frozen=True)
+class RemoteVersion:
+    """远端可用版本。
+
+    :param version: 版本号。
+    :param channel: 发布通道。
+    :param platform: 平台标识。
+    :param manifest: 版本 manifest。
+    :param manifest_path: manifest 文件路径。
+    :param package_exists: manifest 指向的包是否存在。
+    :return: None
+    """
+
+    version: str
+    channel: str
+    platform: str
+    manifest: UpdateManifest
+    manifest_path: Path
+    package_exists: bool
 
 
 class UpdateService:
@@ -90,19 +111,88 @@ class UpdateService:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest channel mismatch: {manifest.channel}")
         if platform and manifest.platform and manifest.platform != platform:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest platform mismatch: {manifest.platform}")
-        decision = decide_update(
-            current_version=current_version,
-            latest_version=manifest.version,
-            mandatory=manifest.mandatory,
-            min_supported_version=manifest.min_supported_version,
-            skipped_version=skipped_version,
-        )
+        if manifest.hidden:
+            decision = UpdateDecision.NOT_AVAILABLE
+        else:
+            decision = decide_update(
+                current_version=current_version,
+                latest_version=manifest.version,
+                mandatory=manifest.mandatory,
+                min_supported_version=manifest.min_supported_version,
+                skipped_version=skipped_version,
+            )
         return CheckUpdateResult(
             decision=decision,
             manifest=manifest,
             package_size=manifest.package.size,
             notes=manifest.notes,
         )
+
+    def list_remote_versions(
+        self,
+        *,
+        app_id: str,
+        channel: str = "",
+        platform: str = "",
+        include_hidden: bool = False,
+    ) -> list[RemoteVersion]:
+        """列出 NAS 上已发布的历史版本。
+
+        :param app_id: 应用标识。
+        :param channel: 发布通道；为空时使用 settings 默认值。
+        :param platform: 可选平台；为空时使用旧版版本路径。
+        :param include_hidden: 是否包含 hidden 版本。
+        :return: 按版本倒序排列的远端版本。
+        """
+        self.source.ensure_available()
+        resolved_channel = channel or self.settings.default_channel
+        versions: list[RemoteVersion] = []
+        for manifest_path in self._remote_version_manifest_paths(app_id, resolved_channel, platform):
+            manifest = self._load_manifest(manifest_path)
+            if manifest.app_id != app_id:
+                raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest app_id mismatch: {manifest.app_id}")
+            if manifest.channel != resolved_channel:
+                continue
+            if platform and manifest.platform and manifest.platform != platform:
+                continue
+            if manifest.hidden and not include_hidden:
+                continue
+            package_path = self.source.resolve_package_path(manifest.package.url)
+            versions.append(
+                RemoteVersion(
+                    version=manifest.version,
+                    channel=manifest.channel,
+                    platform=manifest.platform,
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                    package_exists=package_path.is_file(),
+                )
+            )
+        return sorted(versions, key=lambda item: parse_version_tuple(item.version), reverse=True)
+
+    def get_remote_manifest(self, *, app_id: str, version: str, channel: str = "", platform: str = "") -> UpdateManifest:
+        """读取指定版本 manifest。
+
+        :param app_id: 应用标识。
+        :param version: 目标版本。
+        :param channel: 发布通道；为空时使用 settings 默认值。
+        :param platform: 可选平台；为空时使用旧版版本路径。
+        :return: 版本 manifest。
+        """
+        self.source.ensure_available()
+        manifest_path = self.source.version_manifest_path(app_id, version, platform)
+        if not manifest_path.is_file():
+            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {manifest_path}")
+        manifest = self._load_manifest(manifest_path)
+        self._validate_manifest_identity(
+            manifest,
+            app_id=app_id,
+            channel=channel or self.settings.default_channel,
+            platform=platform,
+        )
+        if manifest.version != version:
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest version mismatch: {manifest.version}")
+        return manifest
 
     def prepare(
         self,
@@ -178,3 +268,51 @@ class UpdateService:
         if not isinstance(payload, dict):
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "manifest must be a JSON object")
         return UpdateManifest.from_payload(payload)
+
+    def _remote_version_manifest_paths(self, app_id: str, channel: str, platform: str) -> list[Path]:
+        """读取索引中的版本 manifest；索引不可用时回退目录扫描。"""
+        index_path = self.source.versions_index_path(app_id, channel, platform)
+        if index_path.is_file():
+            indexed_paths = self._manifest_paths_from_index(index_path)
+            if indexed_paths:
+                return indexed_paths
+        return self.source.iter_version_manifest_paths(app_id, platform)
+
+    def _manifest_paths_from_index(self, index_path: Path) -> list[Path]:
+        """从 versions.json 索引解析 manifest 路径。"""
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"versions index is not valid JSON: {index_path}") from exc
+        if not isinstance(payload, dict):
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "versions index must be a JSON object")
+        versions_payload = payload.get("versions")
+        if not isinstance(versions_payload, list):
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "versions index versions must be a list")
+        manifest_paths: list[Path] = []
+        for item in versions_payload:
+            if not isinstance(item, dict):
+                raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "versions index item must be an object")
+            manifest_url = item.get("manifest_url")
+            if not isinstance(manifest_url, str) or not manifest_url.strip():
+                raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "versions index manifest_url must be a non-empty string")
+            manifest_path = self.source.resolve_package_path(manifest_url.strip())
+            if manifest_path.is_file():
+                manifest_paths.append(manifest_path)
+        return manifest_paths
+
+    def _validate_manifest_identity(
+        self,
+        manifest: UpdateManifest,
+        *,
+        app_id: str,
+        channel: str,
+        platform: str,
+    ) -> None:
+        """校验 manifest 与请求上下文一致。"""
+        if manifest.app_id != app_id:
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest app_id mismatch: {manifest.app_id}")
+        if manifest.channel != channel:
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest channel mismatch: {manifest.channel}")
+        if platform and manifest.platform and manifest.platform != platform:
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest platform mismatch: {manifest.platform}")
