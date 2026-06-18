@@ -1,0 +1,13 @@
+{
+  "nas": {
+    "root": "/Volumes/release-share/UpdateOnlineTool"
+  },
+  "publish": {
+    "default_channel": "stable",
+    "default_minimum_version": "1.0.0",
+    "package_filename": "package.zip"
+  },
+  "updater": {
+    "executable_name": "MyToolUpdater"
+  }
+}

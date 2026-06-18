@@ -17,8 +17,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install-dir", required=True, help="Assembled install root")
     parser.add_argument("--version", required=True, help="Expected release version")
-    parser.add_argument("--app-exe", required=True, help="Stable GUI executable name")
-    parser.add_argument("--updater-exe", required=True, help="Updater executable name")
+    parser.add_argument("--platform", default="windows", choices=["windows", "macos", "linux"], help="Target platform")
+    parser.add_argument("--app-exe", required=True, help="Stable GUI entry name")
+    parser.add_argument("--updater-exe", default="", help="Optional updater entry name")
     parser.add_argument(
         "--settings-relative",
         default="_internal/config/settings.json",
@@ -32,12 +33,14 @@ def main() -> int:
     results: list[dict[str, object]] = []
 
     _add_result(results, install_dir.exists(), f"install dir exists: {install_dir}")
-    _add_result(results, (install_dir / args.app_exe).exists(), f"root stable exe exists: {args.app_exe}")
-    _add_result(results, (install_dir / args.updater_exe).exists(), f"root updater exists: {args.updater_exe}")
+    _add_result(results, (install_dir / args.app_exe).exists(), f"root stable entry exists: {args.app_exe}")
+    if args.updater_exe:
+        _add_result(results, (install_dir / args.updater_exe).exists(), f"root updater exists: {args.updater_exe}")
     _add_result(results, current_json.exists(), "current.json exists")
     _add_result(results, release_dir.exists(), f"release dir exists: releases/{args.version}")
-    _add_result(results, (release_dir / args.app_exe).exists(), f"release GUI exe exists: {args.app_exe}")
-    _add_result(results, (release_dir / args.updater_exe).exists(), f"release updater exists: {args.updater_exe}")
+    _add_result(results, (release_dir / args.app_exe).exists(), f"release GUI entry exists: {args.app_exe}")
+    if args.updater_exe:
+        _add_result(results, (release_dir / args.updater_exe).exists(), f"release updater exists: {args.updater_exe}")
     _add_result(
         results,
         (release_dir / args.settings_relative).exists(),
@@ -52,6 +55,10 @@ def main() -> int:
         else:
             _add_result(results, current_data.get("version") == args.version, "current.json version matches")
             _add_result(results, current_data.get("executable") == args.app_exe, "current.json executable matches")
+            entry = current_data.get("entry")
+            if isinstance(entry, dict):
+                _add_result(results, entry.get("path") == args.app_exe, "current.json entry.path matches")
+                _add_result(results, entry.get("platform") == args.platform, "current.json entry.platform matches")
 
     ok = all(bool(item["ok"]) for item in results)
     print(json.dumps({"ok": ok, "checks": results}, ensure_ascii=False, indent=2))

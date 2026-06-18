@@ -62,6 +62,14 @@ uot init --nas-root D:\Nas
 - `update-endpoint.json`：放在工具项目内，随源码和打包产物分发，用于声明当前工具使用 NAS + `update-online-tool` + 自定义 updater。
 - `config/settings.json`：放在工具项目内，保存 NAS 根路径等后端配置；打包时由 UOT 装配命令复制到 PyInstaller `_internal/config/settings.json`。
 
+打包时按文件归属处理：
+
+- 应用包应能读取 `update-endpoint.json`。如果 GUI 运行时依赖它判断更新来源，就必须随 GUI 包一起分发。
+- `config/settings.json` 是构建默认配置。使用 `uot assemble-pyinstaller --settings config\settings.json` 时，UOT 会复制到运行时配置目录；不用 UOT 装配时，PyInstaller spec 需要手动复制等效文件。
+- `current.json` 是安装根状态文件，由 UOT 装配生成，升级时由 updater 修改；不要把它作为源码配置放进版本化 GUI release。
+- `latest.json` 是 NAS 远端 manifest，由 `uot publish` 生成；不要打进客户端应用包。
+- `pending-update.json`、`update-result.json` 和 `logs/` 是运行时产物，不要预置。
+
 传入 `--nas-root` 时，`init` 默认会先检查 NAS 目录连通性和权限，再写入配置。检查内容包括：
 
 - 路径存在且是目录。

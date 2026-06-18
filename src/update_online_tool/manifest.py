@@ -18,6 +18,7 @@ _MANIFEST_KEYS = {
     "min_supported_version",
     "published_at",
     "notes",
+    "platform",
     "package",
 }
 _PACKAGE_KEYS = {"url", "size", "sha256"}
@@ -79,6 +80,7 @@ class UpdateManifest:
     :param min_supported_version: 最低支持版本。
     :param published_at: 发布时间。
     :param notes: 发布说明。
+    :param platform: 可选平台标识。
     :param package: 升级包信息。
     :return: None
     """
@@ -92,6 +94,7 @@ class UpdateManifest:
     published_at: str
     notes: str
     package: UpdatePackageInfo
+    platform: str = ""
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "UpdateManifest":
@@ -120,6 +123,7 @@ class UpdateManifest:
             published_at=_require_text(payload, "published_at"),
             notes=_require_text(payload, "notes"),
             package=UpdatePackageInfo.from_payload(package_payload),
+            platform=_optional_text(payload, "platform"),
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -127,7 +131,7 @@ class UpdateManifest:
 
         :return: manifest 字典。
         """
-        return {
+        payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "app_id": self.app_id,
             "channel": self.channel,
@@ -138,6 +142,9 @@ class UpdateManifest:
             "notes": self.notes,
             "package": self.package.to_payload(),
         }
+        if self.platform:
+            payload["platform"] = self.platform
+        return payload
 
 
 def _reject_extra_keys(payload: dict[str, Any], *, allowed_keys: set[str], context: str) -> None:
@@ -164,6 +171,21 @@ def _require_text(payload: dict[str, Any], key: str) -> str:
     :return: 非空字符串。
     """
     value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string")
+    return value.strip()
+
+
+def _optional_text(payload: dict[str, Any], key: str) -> str:
+    """读取可选字符串字段。
+
+    :param payload: 字段来源字典。
+    :param key: 字段名。
+    :return: 非空字符串或空字符串。
+    """
+    value = payload.get(key)
+    if value is None:
+        return ""
     if not isinstance(value, str) or not value.strip():
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string")
     return value.strip()

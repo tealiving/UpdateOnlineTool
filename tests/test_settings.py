@@ -64,8 +64,10 @@ def test_resolve_settings_path_prefers_environment_path(tmp_path: Path, monkeypa
     """
     env_path = tmp_path / "env-settings.json"
     appdata = tmp_path / "appdata"
+    home = tmp_path / "home"
     monkeypatch.setenv(UPDATE_SETTINGS_FILE_ENV, str(env_path))
     monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("HOME", str(home))
     user_path = user_settings_path("my-tool")
     user_path.parent.mkdir(parents=True)
     user_path.write_text("{\"nas\":{\"root\":\"D:\\\\Nas\"}}", encoding="utf-8")
@@ -84,6 +86,7 @@ def test_resolve_settings_path_uses_user_level_settings(tmp_path: Path, monkeypa
     """
     monkeypatch.delenv(UPDATE_SETTINGS_FILE_ENV, raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     settings_path = user_settings_path("my-tool")
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text("{\"nas\":{\"root\":\"D:\\\\Nas\"}}", encoding="utf-8")
@@ -102,6 +105,7 @@ def test_resolve_settings_path_uses_bundled_before_cwd(tmp_path: Path, monkeypat
     """
     monkeypatch.delenv(UPDATE_SETTINGS_FILE_ENV, raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path / "empty-appdata"))
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
     monkeypatch.chdir(tmp_path)
     bundled_path = tmp_path / "bundle" / "_internal" / "config" / "settings.json"
     cwd_path = tmp_path / "config" / "settings.json"
@@ -124,6 +128,7 @@ def test_resolve_settings_path_falls_back_to_cwd_config(tmp_path: Path, monkeypa
     """
     monkeypatch.delenv(UPDATE_SETTINGS_FILE_ENV, raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path / "empty-appdata"))
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
     monkeypatch.chdir(tmp_path)
 
     resolved = resolve_settings_path(app_id="my-tool")

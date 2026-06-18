@@ -17,6 +17,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - `project_root`
    - `python_exe` or virtualenv path
    - `app_id`
+   - `platform` (`windows`, `macos`, or `linux`)
    - `product_name`
    - `app_exe`
    - `updater_exe`
@@ -37,18 +38,22 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Prefer a project update endpoint file: `update-endpoint.json`.
    - Use `uot init` with `--nas-root` so NAS read/write checks run.
    - Use `--skip-nas-check` only for offline scaffolding.
+   - Package `update-endpoint.json` with the app when the GUI reads it at runtime.
+   - Pass `config/settings.json` to `uot assemble-pyinstaller --settings`; if not using UOT assembly, copy it to the equivalent runtime config path yourself.
+   - Do not prepackage `latest.json`, `pending-update.json`, `update-result.json`, or logs. `current.json` is generated in the assembled install root, not maintained as source config.
 
 4. Build and assemble:
    - Build with PyInstaller from the project root.
    - Keep GUI executable naming separate from launcher internal naming when the project uses a launcher.
+   - Use `--platform macos` or `--platform linux` for non-Windows onedir output; Windows remains the default.
    - Assemble install and update directories through UOT or the project's thin wrapper around UOT.
    - Stable user entry should be the install root executable, not a versioned release executable.
 
 5. Publish and verify:
    - Compress the update directory contents, not the whole install directory.
-   - Publish the package to NAS with `uot publish`.
-   - Verify NAS metadata and package integrity with `uot verify`.
-   - Check that NAS contains stable `latest.json` and versioned `package.zip`.
+   - Publish the package to NAS with `uot publish`; include `--platform <platform>` for multi-platform projects.
+   - Verify NAS metadata and package integrity with `uot verify`; include the same platform when used.
+   - Check that NAS contains channel `latest.json` and versioned `package.zip`, under the platform subdirectory when platform is set.
 
 6. Test update behavior:
    - Start from an older install root.
@@ -68,12 +73,23 @@ Read `references/troubleshooting.md` when an update fails, the wrong executable 
 
 Use `scripts/check_pyqt_uot_artifacts.py` after assembly to verify the expected install root, stable executable, `current.json`, release directory, GUI executable, updater executable, and embedded settings file shape.
 
-Example:
+Windows example:
 
 ```powershell
 python C:\Users\Administrator\.codex\skills\pyqt-nas-online-update\scripts\check_pyqt_uot_artifacts.py `
   --install-dir dist\MyTool_install_v1.0.5 `
   --version 1.0.5 `
+  --platform windows `
   --app-exe MyTool.exe `
   --updater-exe MyToolUpdater.exe
+```
+
+macOS onedir example:
+
+```bash
+python ~/.codex/skills/pyqt-nas-online-update/scripts/check_pyqt_uot_artifacts.py \
+  --install-dir dist/MyTool_install_v1.0.5 \
+  --version 1.0.5 \
+  --platform macos \
+  --app-exe MyTool
 ```

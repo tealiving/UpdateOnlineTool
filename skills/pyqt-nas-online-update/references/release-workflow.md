@@ -9,8 +9,9 @@
 - `uot_exe`：同一环境中的 `uot` CLI。
 - `app_id`：发布到 NAS 的应用标识。
 - `product_name`：安装目录和用户入口使用的产品名。
-- `app_exe`：GUI 稳定入口 exe 名称。
-- `updater_exe`：updater exe 名称。
+- `platform`：目标平台，通常是 `windows`、`macos` 或 `linux`。
+- `app_exe`：GUI 稳定入口名称；Windows 通常带 `.exe`，macOS/Linux 通常不带。
+- `updater_exe`：updater 入口名称；Windows 通常带 `.exe`，macOS/Linux 通常不带。
 - `pyinstaller_spec`：PyInstaller spec 文件。
 - `current_version`：当前源码版本。
 - `target_version`：发布目标版本。
@@ -33,6 +34,14 @@ update-endpoint.json
 config/settings.json
 ```
 
+打包归属：
+
+- `update-endpoint.json` 是应用侧更新入口声明；如果 GUI 运行时读取它，应随应用包分发。
+- `config/settings.json` 是构建默认后端配置；使用 `uot assemble-pyinstaller --settings <settings_file>` 时会复制到运行时配置目录。若不用 UOT 装配，项目 PyInstaller spec 必须手动复制到等效位置。
+- `current.json` 由 UOT 装配生成在安装根，updater 升级时修改；不要作为源码配置手写到 release 目录。
+- `latest.json` 由 `uot publish` 写到 NAS，是远端发布 manifest；不要打进客户端应用包。
+- `pending-update.json`、`update-result.json` 和 `logs/` 是运行时文件，不要预置。
+
 传入 `--nas-root` 时，UOT 应检查：
 
 - NAS 根目录存在。
@@ -53,7 +62,7 @@ uot init --app <app_id> --nas-root <nas_root> --force --skip-nas-check
 <python_exe> -m PyInstaller --noconfirm --clean <pyinstaller_spec>
 ```
 
-如果项目有自定义 launcher，应保持 GUI 和 launcher 内部构建名分离，避免 release 目录里的 GUI exe 被 launcher 覆盖。
+如果项目有自定义 launcher，应保持 GUI 和 launcher 内部构建名分离，避免 release 目录里的 GUI 入口被 launcher 覆盖。
 
 ## 4. 装配安装目录和升级目录
 
@@ -65,8 +74,12 @@ uot init --app <app_id> --nas-root <nas_root> --force --skip-nas-check
 uot assemble-pyinstaller `
   --dist-dir dist `
   --version <target_version> `
-  --settings-file <settings_file>
+  --product-name <product_name> `
+  --platform <platform> `
+  --settings <settings_file>
 ```
+
+Windows 默认入口为 `<product_name>.exe`。macOS/Linux 默认入口为 `<product_name>`；如果 PyInstaller 内部产物名不同，增加 `--entry-name`、`--release-entry-name` 或 `--launcher-entry-name`。
 
 如果项目保留兼容包装脚本：
 
@@ -109,6 +122,7 @@ uot publish `
   --settings <settings_file> `
   --app <app_id> `
   --version <target_version> `
+  --platform <platform> `
   --package dist\<product_name>_<target_version>.zip `
   --notes "发布 <target_version>" `
   --min-supported-version <minimum_supported_version>
@@ -117,19 +131,22 @@ uot publish `
 校验：
 
 ```powershell
-uot verify --settings <settings_file> --app <app_id>
+uot verify --settings <settings_file> --app <app_id> --platform <platform>
+uot check --settings <settings_file> --app <app_id> --platform <platform> --current-version <current_version>
 ```
 
-NAS 目录通常应包含：
+传入 `--platform` 时，UOT 会按平台隔离 manifest 和包体，避免 Windows/macOS/Linux 同版本包互相覆盖。NAS 目录通常应包含：
 
 ```text
 <nas_root>\
 └── <app_id>\
     ├── stable\
-    │   └── latest.json
+    │   └── <platform>\
+    │       └── latest.json
     └── v<target_version>\
-        ├── latest.json
-        └── package.zip
+        └── <platform>\
+            ├── latest.json
+            └── package.zip
 ```
 
 ## 7. 本地升级验证

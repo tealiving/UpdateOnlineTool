@@ -65,6 +65,31 @@ def test_service_check_returns_optional_update(tmp_path: Path) -> None:
     assert result.manifest.version == "1.0.6"
 
 
+def test_service_check_uses_settings_default_channel_when_channel_is_empty(tmp_path: Path) -> None:
+    """验证 SDK check 与 CLI 一样默认读取 settings.default_channel。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None
+    """
+    _write_manifest(tmp_path, version="1.0.6")
+    stable = tmp_path / "automation-manual-studio" / "stable" / "latest.json"
+    beta = tmp_path / "automation-manual-studio" / "beta" / "latest.json"
+    beta.parent.mkdir(parents=True)
+    stable.replace(beta)
+    payload = json.loads(beta.read_text(encoding="utf-8"))
+    payload["channel"] = "beta"
+    beta.write_text(json.dumps(payload), encoding="utf-8")
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path, default_channel="beta"))
+
+    result = service.check(
+        app_id="automation-manual-studio",
+        current_version="1.0.5",
+    )
+
+    assert result.decision is UpdateDecision.OPTIONAL_UPDATE
+    assert result.manifest.channel == "beta"
+
+
 def test_service_prepare_copies_package(tmp_path: Path) -> None:
     """验证 prepare 从 NAS 复制升级包。
 

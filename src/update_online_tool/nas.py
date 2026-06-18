@@ -30,33 +30,40 @@ class NasReleaseSource:
         if not self.root.exists() or not self.root.is_dir():
             raise UpdateError(UpdateErrorCode.NAS_SOURCE_UNAVAILABLE, f"NAS root is not available: {self.root}")
 
-    def manifest_path(self, app_id: str, channel: str) -> Path:
+    def manifest_path(self, app_id: str, channel: str, platform: str = "") -> Path:
         """解析通道 manifest 路径。
 
         :param app_id: 应用标识。
         :param channel: 发布通道。
+        :param platform: 可选平台；为空时使用旧版通道路径。
         :return: manifest 路径。
         """
+        if platform:
+            return self.root / app_id / channel / platform / "latest.json"
         return self.root / app_id / channel / "latest.json"
 
-    def version_dir(self, app_id: str, version: str) -> Path:
+    def version_dir(self, app_id: str, version: str, platform: str = "") -> Path:
         """解析版本目录。
 
         :param app_id: 应用标识。
         :param version: 版本号。
+        :param platform: 可选平台；为空时使用旧版版本路径。
         :return: 版本目录。
         """
+        if platform:
+            return self.root / app_id / f"v{version}" / platform
         return self.root / app_id / f"v{version}"
 
-    def package_path(self, app_id: str, version: str, package_filename: str) -> Path:
+    def package_path(self, app_id: str, version: str, package_filename: str, platform: str = "") -> Path:
         """解析发布包路径。
 
         :param app_id: 应用标识。
         :param version: 版本号。
         :param package_filename: 包文件名。
+        :param platform: 可选平台；为空时使用旧版版本路径。
         :return: 发布包路径。
         """
-        return self.version_dir(app_id, version) / package_filename
+        return self.version_dir(app_id, version, platform) / package_filename
 
     def resolve_package_path(self, package_url: str) -> Path:
         """解析 manifest 中的相对包路径。

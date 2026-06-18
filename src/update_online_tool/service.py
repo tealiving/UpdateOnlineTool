@@ -65,7 +65,8 @@ class UpdateService:
         *,
         app_id: str,
         current_version: str,
-        channel: str = "stable",
+        channel: str = "",
+        platform: str = "",
         skipped_version: str | None = None,
     ) -> CheckUpdateResult:
         """检查是否存在可用升级。
@@ -73,18 +74,22 @@ class UpdateService:
         :param app_id: 应用标识。
         :param current_version: 当前版本。
         :param channel: 发布通道。
+        :param platform: 可选平台；为空时使用旧版通道路径。
         :param skipped_version: 用户已跳过版本。
         :return: 检查更新结果。
         """
         self.source.ensure_available()
-        manifest_path = self.source.manifest_path(app_id, channel)
+        resolved_channel = channel or self.settings.default_channel
+        manifest_path = self.source.manifest_path(app_id, resolved_channel, platform)
         if not manifest_path.is_file():
             raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {manifest_path}")
         manifest = self._load_manifest(manifest_path)
         if manifest.app_id != app_id:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest app_id mismatch: {manifest.app_id}")
-        if manifest.channel != channel:
+        if manifest.channel != resolved_channel:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest channel mismatch: {manifest.channel}")
+        if platform and manifest.platform and manifest.platform != platform:
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest platform mismatch: {manifest.platform}")
         decision = decide_update(
             current_version=current_version,
             latest_version=manifest.version,

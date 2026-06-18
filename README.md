@@ -68,6 +68,19 @@ uot init --nas-root D:\Nas --skip-nas-check
 
 `--app` 可选；不传时自动使用当前工作目录名作为应用标识。`--output` 也可选，默认写入当前目录的 `update-endpoint.json`。
 
+## 应用打包文件清单
+
+接入方应用仓库应保留并打包两类配置：
+
+- `update-endpoint.json`：应用自己的更新入口声明。标准接入时应随源码提交，并随 GUI 包一起分发，供应用判断使用 NAS + UOT + 自定义 updater 流程。
+- `config/settings.json`：构建默认后端配置，包含 NAS 根路径、默认 channel、包文件名和 updater 名称。使用 `uot assemble-pyinstaller --settings config/settings.json` 时，UOT 会把它复制到运行时配置位置：Windows/Linux onedir 为 `_internal/config/settings.json`，macOS `.app` 为 `Contents/Resources/config/settings.json`。如果不用 UOT 装配，接入方自己的 PyInstaller spec 必须完成同等复制。
+
+不要把下面这些文件当作应用源码配置手工打包：
+
+- `current.json`：由 `uot assemble-pyinstaller` 写到安装根目录，表示当前激活 release；升级时由 updater 修改。初始完整安装包应包含装配生成的安装根，因此会自然包含它；版本化 GUI release 目录和升级 zip 不应手写这个文件。
+- `latest.json`：由 `uot publish` 写到 NAS 的 channel/version 目录，是远端发布 manifest，不应放进客户端应用包。
+- `pending-update.json`、`update-result.json`、`logs/`：运行时生成，用于 updater 交接、结果和排障，不应随应用包预置。
+
 需要写入用户级 settings 时，显式增加 `--user-settings`：
 
 ```bash
@@ -93,6 +106,7 @@ uot init --app my-tool --output update-endpoint.json --nas-root D:\Nas --setting
 ```
 
 手动配置仍然支持，适合运维或打包脚本准备内置默认配置。
+Windows 可从 `config/settings.template.json` 开始，macOS 可从 `config/settings.macos.template.json` 开始。
 
 Windows NAS 示例：
 
@@ -118,6 +132,9 @@ macOS NAS 示例：
 {
   "nas": {
     "root": "/Volumes/release-share/UpdateOnlineTool"
+  },
+  "updater": {
+    "executable_name": "MyToolUpdater"
   }
 }
 ```
@@ -151,7 +168,7 @@ SDK 解析 settings 的优先级：
 
 UOT 提供标准 PyInstaller 目录装配命令，接入方不需要自己处理 launcher 名称、`current.json` 或 release 目录结构。
 
-前提是 PyInstaller 已经分别构建两个 onedir 目录：
+前提是 PyInstaller 已经分别构建两个 onedir 目录。Windows 默认入口带 `.exe`：
 
 ```text
 dist/
@@ -189,6 +206,50 @@ dist/
 
 用户快捷方式和后续启动入口始终指向安装根目录的 `MyTool.exe`。该文件是稳定 launcher；实际 GUI 位于 `releases/<version>/MyTool.exe`。升级包中的 `_launcher/MyTool.exe` 用于升级后刷新安装根目录的稳定入口。
 
+macOS onedir 产物使用无 `.exe` 入口，并显式指定平台：
+
+```text
+dist/
+├── MyTool_release_v1.0.6/
+│   ├── MyToolGui
+│   └── _internal/
+└── MyTool_launcher/
+    ├── MyToolLauncher
+    └── _internal/
+```
+
+```bash
+uot assemble-pyinstaller --version 1.0.6 --product-name MyTool --platform macos --settings config/settings.json --force
+```
+
+macOS 输出中的稳定入口为 `MyTool_install_v1.0.6/MyTool`，release GUI 位于 `releases/1.0.6/MyTool`。如果项目内部构建名不同，使用 `--entry-name`、`--release-entry-name` 或 `--launcher-entry-name` 显式覆盖。
+
+macOS `.app` bundle 也可以作为入口装配，适合需要应用包目录结构的本地或内部分发形态：
+
+```text
+dist/
+├── MyTool_release_v1.0.6/
+│   └── MyToolGui.app/
+│       └── Contents/MacOS/MyToolGui
+└── MyTool_launcher/
+    └── MyToolLauncher.app/
+        └── Contents/MacOS/MyToolLauncher
+```
+
+```bash
+uot assemble-pyinstaller \
+  --version 1.0.6 \
+  --product-name MyTool \
+  --platform macos \
+  --entry-name MyTool.app \
+  --release-entry-name MyToolGui.app \
+  --launcher-entry-name MyToolLauncher.app \
+  --settings config/settings.json \
+  --force
+```
+
+`.app` 模式下 `current.json.entry.kind` 会写为 `app_bundle`，settings 会复制到 `MyTool.app/Contents/Resources/config/settings.json`。
+
 ## NAS 目录结构
 
 ```text
@@ -209,6 +270,47 @@ dist/
     "size": 123456,
     "sha256": "..."
   }
+}
+```
+
+多平台并行发布时，推荐显式传 `--platform`，避免同一个版本号的 Windows/macOS/Linux 包互相覆盖：
+
+```bash
+uot publish \
+  --settings config/settings.json \
+  --app my-tool \
+  --version 1.0.6 \
+  --platform macos \
+  --package dist/MyTool_macos_1.0.6.zip
+
+uot verify --settings config/settings.json --app my-tool --platform macos
+uot check --settings config/settings.json --app my-tool --platform macos --current-version 1.0.5
+```
+
+平台隔离后的目录结构：
+
+```text
+<nas-root>/
+└── <app-id>/
+    ├── stable/
+    │   └── macos/
+    │       └── latest.json
+    └── v<version>/
+        └── macos/
+            ├── latest.json
+            └── package.zip
+```
+
+对应 `package.url`：
+
+```json
+{
+  "package": {
+    "url": "my-tool/v1.0.6/macos/package.zip",
+    "size": 123456,
+    "sha256": "..."
+  },
+  "platform": "macos"
 }
 ```
 

@@ -76,6 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--version", required=True, help="Release version.")
     publish.add_argument("--package", required=True, type=Path, help="Release zip path.")
     publish.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
+    publish.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
     publish.add_argument("--notes", default="", help="Release notes.")
     publish.add_argument("--min-supported-version", default="", help="Minimum supported current version.")
     publish.add_argument("--mandatory", action="store_true", help="Mark this update as mandatory.")
@@ -85,19 +86,25 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_settings_arg(verify)
     verify.add_argument("--app", required=True, help="Application id.")
     verify.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
+    verify.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
 
     check = subparsers.add_parser("check", help="Check whether an app version has an update.")
     _add_settings_arg(check)
     check.add_argument("--app", required=True, help="Application id.")
     check.add_argument("--current-version", required=True, help="Current app version.")
     check.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
+    check.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
     check.add_argument("--skipped-version", default="", help="Skipped version.")
 
     assemble = subparsers.add_parser("assemble-pyinstaller", help="Assemble PyInstaller GUI and launcher bundles.")
     assemble.add_argument("--version", required=True, help="Release version.")
     assemble.add_argument("--dist-dir", default="dist", type=Path, help="PyInstaller dist directory.")
     assemble.add_argument("--app", default="", help="Application id. Defaults to product name.")
-    assemble.add_argument("--product-name", required=True, help="Final executable name without .exe.")
+    assemble.add_argument("--product-name", required=True, help="Product name used for default bundle names.")
+    assemble.add_argument("--platform", default="windows", choices=["windows", "macos", "linux"], help="Target platform.")
+    assemble.add_argument("--entry-name", default="", help="Final stable entry name. Defaults to product name plus platform suffix.")
+    assemble.add_argument("--release-entry-name", default="", help="Source GUI entry name inside the release bundle.")
+    assemble.add_argument("--launcher-entry-name", default="", help="Source launcher entry name inside the launcher bundle.")
     assemble.add_argument("--settings", default=None, type=Path, help="Project settings.json to bundle.")
     assemble.add_argument("--force", action="store_true", help="Overwrite existing output directories.")
     return parser
@@ -269,16 +276,17 @@ def _publish(args: argparse.Namespace) -> int:
     settings = _load_settings_arg(args)
     source = NasReleaseSource(settings.nas_root)
     channel = args.channel or settings.default_channel
+    platform = _normalize_optional_platform(args.platform)
     min_supported_version = args.min_supported_version or settings.default_minimum_version
     source_package_path = Path(args.package)
     if not source_package_path.is_file():
         raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {source_package_path}")
-    target_package_path = source.package_path(args.app, args.version, settings.package_filename)
+    target_package_path = source.package_path(args.app, args.version, settings.package_filename, platform)
     target_package_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_package_path, target_package_path)
     package_size = target_package_path.stat().st_size
     package_sha256 = _sha256_of(target_package_path)
-    relative_package_url = f"{args.app}/v{args.version}/{settings.package_filename}"
+    relative_package_url = _package_url(args.app, args.version, settings.package_filename, platform)
     published_at = args.published_at.strip() or datetime.now(timezone.utc).isoformat()
     payload: dict[str, object] = {
         "schema_version": 2,
@@ -295,9 +303,11 @@ def _publish(args: argparse.Namespace) -> int:
             "sha256": package_sha256,
         },
     }
+    if platform:
+        payload["platform"] = platform
     manifest = UpdateManifest.from_payload(payload)
-    _write_json(source.version_dir(args.app, args.version) / "latest.json", manifest.to_payload())
-    _write_json(source.manifest_path(args.app, channel), manifest.to_payload())
+    _write_json(source.version_dir(args.app, args.version, platform) / "latest.json", manifest.to_payload())
+    _write_json(source.manifest_path(args.app, channel, platform), manifest.to_payload())
     print(f"Published {args.app} v{args.version} to {settings.nas_root}")
     return 0
 
@@ -312,8 +322,11 @@ def _verify(args: argparse.Namespace) -> int:
     source = NasReleaseSource(settings.nas_root)
     source.ensure_available()
     channel = args.channel or settings.default_channel
-    manifest_path = source.manifest_path(args.app, channel)
+    platform = _normalize_optional_platform(args.platform)
+    manifest_path = source.manifest_path(args.app, channel, platform)
     manifest = _load_manifest_file(manifest_path)
+    if platform and manifest.platform and manifest.platform != platform:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest platform mismatch: {manifest.platform}")
     package_path = source.resolve_package_path(manifest.package.url)
     if not package_path.is_file():
         raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {package_path}")
@@ -341,10 +354,12 @@ def _check(args: argparse.Namespace) -> int:
     """
     settings = _load_settings_arg(args)
     channel = args.channel or settings.default_channel
+    platform = _normalize_optional_platform(args.platform)
     result = UpdateService(settings).check(
         app_id=args.app,
         current_version=args.current_version,
         channel=channel,
+        platform=platform,
         skipped_version=args.skipped_version or None,
     )
     print(f"{result.decision.value}: {result.manifest.version}")
@@ -362,6 +377,10 @@ def _assemble_pyinstaller(args: argparse.Namespace) -> int:
         app_id=args.app,
         dist_dir=Path(args.dist_dir),
         product_name=args.product_name,
+        platform=args.platform,
+        entry_name=args.entry_name,
+        release_entry_name=args.release_entry_name,
+        launcher_entry_name=args.launcher_entry_name,
         settings_path=args.settings,
         force=bool(args.force),
     )
@@ -405,6 +424,42 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _package_url(app_id: str, version: str, package_filename: str, platform: str) -> str:
+    """生成 manifest package.url。
+
+    :param app_id: 应用标识。
+    :param version: 版本号。
+    :param package_filename: 包文件名。
+    :param platform: 可选平台。
+    :return: NAS 根目录下的相对包路径。
+    """
+    if platform:
+        return f"{app_id}/v{version}/{platform}/{package_filename}"
+    return f"{app_id}/v{version}/{package_filename}"
+
+
+def _normalize_optional_platform(platform: str) -> str:
+    """规范化可选平台参数。
+
+    :param platform: 原始平台名。
+    :return: windows、macos、linux 或空字符串。
+    """
+    normalized = str(platform or "").strip().lower()
+    if not normalized:
+        return ""
+    aliases = {
+        "win": "windows",
+        "win32": "windows",
+        "darwin": "macos",
+        "mac": "macos",
+        "osx": "macos",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"windows", "macos", "linux"}:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"unsupported platform: {platform}")
+    return normalized
 
 
 def _sha256_of(path: Path) -> str:

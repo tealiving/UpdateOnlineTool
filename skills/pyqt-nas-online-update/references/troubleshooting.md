@@ -5,9 +5,10 @@
 检查：
 
 - `config/settings.json` 中的 NAS 根路径是否正确。
-- 当前 Windows 用户是否能在资源管理器或 PowerShell 中读取该路径。
-- 当前 Windows 用户是否能写入、读取并删除临时文件。
-- 如果是真实 SMB 路径，确认当前用户已有 SMB 会话或凭据管理器中已有凭证。
+- 当前系统用户是否能在文件管理器或 shell 中读取该路径。
+- 当前系统用户是否能写入、读取并删除临时文件。
+- Windows 使用 UNC 路径或已登录 SMB 会话；macOS 通常使用 `/Volumes/...` 挂载卷。
+- 如果是真实 SMB 路径，确认当前用户已有 SMB 会话、凭据管理器凭证或钥匙串凭证。
 
 UOT 不应保存 NAS 用户名和密码。Windows 使用系统凭证或当前 SMB 会话；macOS 使用已挂载卷或钥匙串。
 
@@ -43,13 +44,14 @@ config/settings.json
 
 ## 启动安装根没有 GUI
 
-常见原因是 PyInstaller 产物中 GUI 和 launcher 名称冲突，导致 release 目录里的 GUI exe 实际上是 launcher。
+常见原因是 PyInstaller 产物中 GUI 和 launcher 名称冲突，导致 release 目录里的 GUI 入口实际上是 launcher。
 
 检查：
 
-- release 目录中的 `<app_exe>` 文件大小是否异常。
+- release 目录中的 `<app_exe>` 或无 `.exe` 入口文件大小是否异常。
 - release 目录是否生成了 launcher 日志。
 - spec 中 GUI 构建名和 launcher 构建名是否分离。
+- 非 Windows 装配是否传入了 `uot assemble-pyinstaller --platform macos` 或 `--platform linux`。
 
 修复方式：
 
@@ -64,9 +66,9 @@ config/settings.json
 ```text
 current.json
 update-result.json
-logs\update.log
-logs\launcher.log
-releases\<target_version>\<app_exe>
+logs/update.log
+logs/launcher.log
+releases/<target_version>/<app_exe>
 ```
 
 判断：
@@ -74,6 +76,7 @@ releases\<target_version>\<app_exe>
 - `update-result.json.success = false`：优先看 updater 日志。
 - `current.json.version` 未变化：检查 updater 是否成功写入安装根。
 - `current.json.version` 已变化但 GUI 仍旧：检查 launcher 是否读取安装根而不是 release 根。
+- `current.json.entry.platform` 与目标平台不一致：重新用正确的 `--platform` 装配。
 
 ## 用户要修改 NAS 路径
 
