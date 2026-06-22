@@ -1099,6 +1099,7 @@ def test_cli_assemble_pyinstaller_supports_macos_app_bundle_entries(tmp_path: Pa
     settings_path = tmp_path / "config" / "settings.json"
     _write_macos_app_bundle(release_dir / "MyToolGui.app", "gui")
     _write_macos_app_bundle(launcher_dir / "MyToolLauncher.app", "launcher")
+    _write_app_bundle_symlink(release_dir / "MyToolGui.app")
     settings_path.parent.mkdir()
     settings_path.write_text('{"nas":{"root":"/Volumes/release-share/UpdateOnlineTool"}}', encoding="utf-8")
 
@@ -1144,6 +1145,12 @@ def test_cli_assemble_pyinstaller_supports_macos_app_bundle_entries(tmp_path: Pa
         install_root / "releases" / "1.2.3" / "MyTool.app" / "Contents" / "Resources" / "config" / "settings.json"
     ).is_file()
     assert (update_root / "MyTool.app" / "Contents" / "MacOS" / "MyToolGui").read_text(encoding="utf-8") == "gui"
+    release_link = install_root / "releases" / "1.2.3" / "MyTool.app" / "Contents" / "Resources" / "runtime.dylib"
+    update_link = update_root / "MyTool.app" / "Contents" / "Resources" / "runtime.dylib"
+    assert release_link.is_symlink()
+    assert update_link.is_symlink()
+    assert release_link.readlink() == Path("../Frameworks/runtime.dylib")
+    assert update_link.readlink() == Path("../Frameworks/runtime.dylib")
     assert (update_root / "_launcher" / "MyTool.app" / "Contents" / "MacOS" / "MyToolLauncher").read_text(
         encoding="utf-8"
     ) == "launcher"
@@ -1161,6 +1168,22 @@ def _write_macos_app_bundle(path: Path, executable_text: str) -> None:
     executable_path.parent.mkdir(parents=True)
     (path / "Contents" / "Resources").mkdir(parents=True)
     executable_path.write_text(executable_text, encoding="utf-8")
+
+
+def _write_app_bundle_symlink(path: Path) -> None:
+    """写入 macOS .app 内部资源 symlink，用于验证装配不会解引用。
+
+    :param path: .app bundle 根路径。
+    :return: None
+    """
+    target = path / "Contents" / "Frameworks" / "runtime.dylib"
+    link = path / "Contents" / "Resources" / "runtime.dylib"
+    target.parent.mkdir(parents=True)
+    target.write_text("runtime", encoding="utf-8")
+    try:
+        link.symlink_to(Path("../Frameworks/runtime.dylib"))
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink is not available on this filesystem: {exc}")
 
 
 def _write_install_root(tmp_path: Path, *, current_version: str, entry_name: str) -> Path:

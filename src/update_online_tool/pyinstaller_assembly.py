@@ -217,18 +217,18 @@ def assemble_pyinstaller_release(config: PyInstallerAssemblyConfig) -> PyInstall
     _prepare_output_dir(config.update_output, force=config.force)
 
     install_release_dir = config.install_output / "releases" / config.version
-    shutil.copytree(config.release_dir, install_release_dir)
+    shutil.copytree(config.release_dir, install_release_dir, symlinks=True)
     _normalize_executable(install_release_dir, release_source_exe.name, desired_entry)
-    shutil.copytree(config.launcher_dir, config.install_output, dirs_exist_ok=True)
+    shutil.copytree(config.launcher_dir, config.install_output, dirs_exist_ok=True, symlinks=True)
     _normalize_executable(config.install_output, launcher_source_exe.name, desired_entry)
     _write_current_json(config.install_output / "current.json", config.app_id, config.version, desired_entry, platform)
     _copy_settings_if_requested(config.settings_path, install_release_dir)
     updater_path = _copy_updater_bundle(config.updater_bundle, config.install_output / "updater", config.updater_name)
 
-    shutil.copytree(config.release_dir, config.update_output, dirs_exist_ok=True)
+    shutil.copytree(config.release_dir, config.update_output, dirs_exist_ok=True, symlinks=True)
     _normalize_executable(config.update_output, release_source_exe.name, desired_entry)
     update_launcher_dir = config.update_output / "_launcher"
-    shutil.copytree(config.launcher_dir, update_launcher_dir)
+    shutil.copytree(config.launcher_dir, update_launcher_dir, symlinks=True)
     _normalize_executable(update_launcher_dir, launcher_source_exe.name, desired_entry)
     _copy_settings_if_requested(config.settings_path, config.update_output)
 
@@ -506,7 +506,7 @@ def _copy_updater_bundle(updater_bundle: Path | None, updater_root: Path, update
     updater_root.mkdir(parents=True, exist_ok=True)
     target = updater_root / (updater_name or source.name)
     if source.is_dir():
-        shutil.copytree(source, target)
+        shutil.copytree(source, target, symlinks=True)
         return target
     shutil.copy2(source, target)
     return target

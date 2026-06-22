@@ -126,6 +126,27 @@ def test_install_prepared_package_preserves_zip_file_mode(tmp_path: Path) -> Non
     assert installed_mode & stat.S_IXUSR
 
 
+def test_install_prepared_package_preserves_zip_symlink(tmp_path: Path) -> None:
+    """验证 runtime 解压时保留 zip 中的 POSIX symlink。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.app")
+    package_path = tmp_path / "package.zip"
+    with zipfile.ZipFile(package_path, "w") as archive:
+        archive.writestr("MyTool.app/Contents/MacOS/MyTool", "new")
+        archive.writestr("MyTool.app/Contents/Frameworks/runtime.dylib", "runtime")
+        _write_zip_symlink(
+            archive,
+            "MyTool.app/Contents/Resources/runtime.dylib",
+            "../Frameworks/runtime.dylib",
+        )
+    manifest = _manifest(package_path, version="1.1.0")
+
+    install_prepared_package(install_root=install_root, package_path=package_path, manifest=manifest)
+
+    installed_link = install_root / "releases" / "1.1.0" / "MyTool.app" / "Contents" / "Resources" / "runtime.dylib"
+    assert installed_link.is_symlink()
+    assert installed_link.readlink() == Path("../Frameworks/runtime.dylib")
+
+
 def test_install_prepared_package_accepts_macos_app_with_different_inner_executable(tmp_path: Path) -> None:
     """验证 macOS .app 内部可执行文件名可不同于 bundle 名。"""
     install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.app")
@@ -324,6 +345,20 @@ def _write_package(path: Path, files: dict[str, str]) -> Path:
         for name, content in files.items():
             archive.writestr(name, content)
     return path
+
+
+def _write_zip_symlink(archive: zipfile.ZipFile, member_name: str, link_target: str) -> None:
+    """向 zip 写入 POSIX symlink 成员。
+
+    :param archive: 待写入的 zip 包。
+    :param member_name: symlink 成员路径。
+    :param link_target: symlink 指向的相对路径。
+    :return: None
+    """
+    info = zipfile.ZipInfo(member_name)
+    info.create_system = 3
+    info.external_attr = ((stat.S_IFLNK | 0o777) << 16)
+    archive.writestr(info, link_target.encode("utf-8"))
 
 
 def _manifest(package_path: Path, *, version: str) -> UpdateManifest:

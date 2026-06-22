@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -504,6 +505,9 @@ def _extract_zip_safe(package_path: Path, target_dir: Path) -> None:
                     if mode:
                         extracted_path.chmod(mode)
                     continue
+                if stat.S_ISLNK(mode):
+                    _extract_zip_symlink(archive, member, extracted_path, target_dir)
+                    continue
                 extracted_path.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(member) as source_file, extracted_path.open("wb") as target_file:
                     shutil.copyfileobj(source_file, target_file)
@@ -511,6 +515,28 @@ def _extract_zip_safe(package_path: Path, target_dir: Path) -> None:
                     extracted_path.chmod(mode)
     except zipfile.BadZipFile as exc:
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"package is not a valid zip: {package_path}") from exc
+
+
+def _extract_zip_symlink(archive: zipfile.ZipFile, member: zipfile.ZipInfo, extracted_path: Path, target_dir: Path) -> None:
+    """恢复 zip 中的 POSIX symlink，并拒绝指向解压根外部的链接。
+
+    :param archive: 待解压的 zip 包。
+    :param member: symlink 成员信息。
+    :param extracted_path: symlink 目标写入路径。
+    :param target_dir: 当前解压根目录。
+    :return: None
+    """
+    link_target = archive.read(member).decode("utf-8")
+    if not link_target:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"empty symlink target: {member.filename}")
+    link_target_path = Path(link_target)
+    if link_target_path.is_absolute():
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe symlink target: {member.filename}")
+    resolved_target = (extracted_path.parent / link_target_path).resolve()
+    if not resolved_target.is_relative_to(target_dir.resolve()):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe symlink target: {member.filename}")
+    extracted_path.parent.mkdir(parents=True, exist_ok=True)
+    extracted_path.symlink_to(link_target)
 
 
 def _verify_zip_plan(package_path: Path, entry_name: str) -> None:
