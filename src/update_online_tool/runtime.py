@@ -345,13 +345,19 @@ def launch_current(*, install_root: Path) -> subprocess.Popen[bytes]:
     current_payload = _read_json_object(root / "current.json", "current.json")
     release_dir = str(current_payload.get("release_dir", "")).strip()
     executable = str(current_payload.get("executable", "")).strip()
+    if not executable:
+        entry_payload = current_payload.get("entry")
+        if isinstance(entry_payload, dict):
+            path_payload = entry_payload.get("path")
+            if isinstance(path_payload, str):
+                executable = path_payload.strip()
     if not release_dir or not executable:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json must contain release_dir and executable")
     entry_path = root / release_dir / executable
     if not entry_path.exists():
         raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"current entry not found: {entry_path}")
-    if entry_path.is_dir() and entry_path.suffix == ".app" and sys.platform == "darwin":
-        return subprocess.Popen(["open", str(entry_path)], cwd=str(entry_path.parent))
+    if _is_macos_app_bundle(entry_path) and sys.platform == "darwin":
+        return subprocess.Popen(["open", "-n", str(entry_path)], cwd=str(entry_path.parent), close_fds=True)
     return subprocess.Popen([str(entry_path)], cwd=str(entry_path.parent))
 
 
@@ -628,6 +634,16 @@ def _read_json_object(path: Path, context: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{context} must be a JSON object")
     return payload
+
+
+def _is_macos_app_bundle(path: Path) -> bool:
+    """判断路径是否为 macOS 应用包。"""
+    return (
+        path.is_dir()
+        and path.suffix == ".app"
+        and (path / "Contents" / "MacOS").is_dir()
+        and any(candidate.is_file() for candidate in (path / "Contents" / "MacOS").iterdir())
+    )
 
 
 def _require_path(payload: dict[str, Any], key: str) -> Path:

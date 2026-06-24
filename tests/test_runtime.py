@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import zipfile
 from pathlib import Path
@@ -314,6 +315,69 @@ def test_install_prepared_package_rejects_windows_style_path_traversal(tmp_path:
     assert not (install_root / "releases" / "1.1.0").exists()
 
 
+def test_launch_current_uses_open_n_for_macos_app_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """验证 macOS 上 launch_current 会使用 open -n 启动 .app。"""
+    install_root = _write_install_root_with_app_bundle(tmp_path, current_version="1.0.0", entry_name="MyTool.app")
+
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 1234
+
+    def fake_popen(args: list[str], cwd: str | None = None, close_fds: bool = False) -> object:
+        launched["args"] = tuple(args)
+        launched["cwd"] = cwd
+        launched["close_fds"] = close_fds
+        return FakeProcess()
+
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(runtime.subprocess, "Popen", fake_popen)
+
+    runtime.launch_current(install_root=install_root)
+
+    assert launched["args"] == (
+        "open",
+        "-n",
+        str(install_root / "releases" / "1.0.0" / "MyTool.app"),
+    )
+    assert launched["cwd"] == str((install_root / "releases" / "1.0.0" / "MyTool.app").parent)
+    assert launched["close_fds"] is True
+
+
+def test_launch_current_falls_back_to_entry_path_when_executable_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 current.json 缺少 executable 时回退到 entry.path。"""
+    install_root = _write_install_root_with_app_bundle(tmp_path, current_version="1.0.0", entry_name="MyTool.app")
+    current_path = install_root / "current.json"
+    payload = json.loads(current_path.read_text(encoding="utf-8"))
+    payload.pop("executable", None)
+    current_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    launched: list[tuple[str, ...]] = []
+
+    def fake_popen(args: list[str], cwd: str | None = None, close_fds: bool = False) -> object:
+        launched.append(tuple(args))
+        class FakeProcess:
+            pid = 4321
+
+        return FakeProcess()
+
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.setattr(runtime.subprocess, "Popen", fake_popen)
+
+    runtime.launch_current(install_root=install_root)
+
+    assert launched
+    # 使用 .app 启动时，首参数应包含 open -n 命令。
+    assert launched[0] == (
+        "open",
+        "-n",
+        str(install_root / "releases" / "1.0.0" / "MyTool.app"),
+    )
+
+
 def _write_install_root(tmp_path: Path, *, current_version: str, entry_name: str) -> Path:
     """写入测试安装根。"""
     install_root = tmp_path / "install"
@@ -336,6 +400,42 @@ def _write_install_root(tmp_path: Path, *, current_version: str, entry_name: str
         ),
         encoding="utf-8",
     )
+    return install_root
+
+
+def _write_install_root_with_app_bundle(
+    tmp_path: Path,
+    *,
+    current_version: str,
+    entry_name: str = "MyTool.app",
+) -> Path:
+    """写入包含 macOS .app 的测试安装根。"""
+    install_root = _write_install_root(tmp_path, current_version=current_version, entry_name=entry_name)
+    release_dir = install_root / "releases" / current_version / entry_name
+    if release_dir.exists():
+        if release_dir.is_dir():
+            shutil.rmtree(release_dir)
+        else:
+            release_dir.unlink()
+    release_dir.mkdir(parents=True)
+    binary_path = release_dir / "Contents" / "MacOS" / "MyTool"
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    binary_path.write_text("current", encoding="utf-8")
+
+    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload.update(
+        {
+            "entry": {
+                "kind": "app_bundle",
+                "path": entry_name,
+                "platform": "macos",
+            }
+        }
+    )
+    current_payload["executable"] = entry_name
+    current_payload["version"] = current_version
+    current_payload["release_dir"] = f"releases/{current_version}"
+    (install_root / "current.json").write_text(json.dumps(current_payload), encoding="utf-8")
     return install_root
 
 
