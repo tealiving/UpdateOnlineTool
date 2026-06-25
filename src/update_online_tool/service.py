@@ -42,6 +42,7 @@ class RemoteVersion:
     :param version: 版本号。
     :param channel: 发布通道。
     :param platform: 平台标识。
+    :param notes: 发布说明。
     :param manifest: 版本 manifest。
     :param manifest_path: manifest 文件路径。
     :param package_exists: manifest 指向的包是否存在。
@@ -51,6 +52,7 @@ class RemoteVersion:
     version: str
     channel: str
     platform: str
+    notes: str
     manifest: UpdateManifest
     manifest_path: Path
     package_exists: bool
@@ -163,6 +165,7 @@ class UpdateService:
                     version=manifest.version,
                     channel=manifest.channel,
                     platform=manifest.platform,
+                    notes=manifest.notes,
                     manifest=manifest,
                     manifest_path=manifest_path,
                     package_exists=package_path.is_file(),
@@ -180,14 +183,19 @@ class UpdateService:
         :return: 版本 manifest。
         """
         self.source.ensure_available()
-        manifest_path = self.source.version_manifest_path(app_id, version, platform)
+        resolved_channel = channel or self.settings.default_channel
+        manifest_path = self.source.version_manifest_path(app_id, version, platform, resolved_channel)
+        if not manifest_path.is_file():
+            legacy_manifest_path = self.source.version_manifest_path(app_id, version, platform)
+            if legacy_manifest_path.is_file():
+                manifest_path = legacy_manifest_path
         if not manifest_path.is_file():
             raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {manifest_path}")
         manifest = self._load_manifest(manifest_path)
         self._validate_manifest_identity(
             manifest,
             app_id=app_id,
-            channel=channel or self.settings.default_channel,
+            channel=resolved_channel,
             platform=platform,
         )
         if manifest.version != version:
@@ -272,11 +280,29 @@ class UpdateService:
     def _remote_version_manifest_paths(self, app_id: str, channel: str, platform: str) -> list[Path]:
         """读取索引中的版本 manifest；索引不可用时回退目录扫描。"""
         index_path = self.source.versions_index_path(app_id, channel, platform)
+        scanned_paths = self.source.iter_version_manifest_paths(app_id, platform, channel)
         if index_path.is_file():
             indexed_paths = self._manifest_paths_from_index(index_path)
             if indexed_paths:
-                return indexed_paths
-        return self.source.iter_version_manifest_paths(app_id, platform)
+                return self._merge_manifest_paths(indexed_paths, scanned_paths)
+        return scanned_paths
+
+    def _merge_manifest_paths(self, first_paths: list[Path], second_paths: list[Path]) -> list[Path]:
+        """合并 manifest 路径并保持首次出现优先级。
+
+        :param first_paths: 优先路径列表。
+        :param second_paths: 补充路径列表。
+        :return: 去重后的路径列表。
+        """
+        merged: list[Path] = []
+        seen: set[Path] = set()
+        for path in [*first_paths, *second_paths]:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            merged.append(path)
+        return merged
 
     def _manifest_paths_from_index(self, index_path: Path) -> list[Path]:
         """从 versions.json 索引解析 manifest 路径。"""

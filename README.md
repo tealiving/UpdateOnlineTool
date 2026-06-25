@@ -256,9 +256,23 @@ uot assemble-pyinstaller \
 <nas-root>/
 └── <app-id>/
     ├── stable/
-    │   └── latest.json
-    └── v<version>/
-        └── package.zip
+    │   ├── latest.json
+    │   ├── versions.json
+    │   └── v<version>/
+    │       ├── latest.json
+    │       └── package.zip
+    ├── beta/
+    │   ├── latest.json
+    │   ├── versions.json
+    │   └── v<version>/
+    │       ├── latest.json
+    │       └── package.zip
+    └── test/
+        ├── latest.json
+        ├── versions.json
+        └── v<version>/
+            ├── latest.json
+            └── package.zip
 ```
 
 `package.url` 是相对 NAS 根目录的路径：
@@ -266,12 +280,14 @@ uot assemble-pyinstaller \
 ```json
 {
   "package": {
-    "url": "my-tool/v1.0.6/package.zip",
+    "url": "my-tool/stable/v1.0.6/package.zip",
     "size": 123456,
     "sha256": "..."
   }
 }
 ```
+
+远端版本包按 channel 隔离，同一个版本号可以分别发布到 `test`、`beta`、`stable` 且 NAS 文件互不覆盖。客户端安装根仍以 `releases/<version>` 作为本地版本目录，自动更新比较也以版本号为准；如果同一客户端需要从测试包升级到正式包，正式包应使用递增版本号，或通过 `install-prepared --force` 明确覆盖同版本本地 release。旧版 `<app-id>/v<version>/package.zip` 布局仍可被 `list-remote`、`show-version`、`prepare-version` 读取，用于兼容历史 NAS 发布。
 
 多平台并行发布时，推荐显式传 `--platform`，避免同一个版本号的 Windows/macOS/Linux 包互相覆盖：
 
@@ -295,10 +311,13 @@ uot publish \
   --app my-tool \
   --version 1.0.7 \
   --package dist/MyTool_1.0.7.zip \
+  --notes-file docs/release-notes/1.0.7.md \
   --requires-confirmation \
   --rollout-percent 25 \
   --data-schema-version 3
 ```
+
+`--notes` 适合短说明，`--notes-file` 适合把变更记录直接从 Markdown 或纯文本文件读入。发布时这些说明会写入 manifest 和 `versions.json`，GUI 或 SDK 读取历史版本时直接调用 `list-remote` / `show-version`。
 
 可选策略包括 `--allow-downgrade`、`--hidden`、`--requires-confirmation`、`--rollout-percent 0..100` 和 `--data-schema-version <int>`。`hidden` 版本默认不会出现在 `list-remote`，也不会被普通 `check` 当作可用更新；运维可用 `list-remote --include-hidden`、`show-version` 或 `prepare-version` 显式操作。
 
@@ -328,7 +347,7 @@ uot show-version --settings config/settings.json --app my-tool --version 1.0.4 -
 uot prepare-version --settings config/settings.json --app my-tool --version 1.0.4 --platform macos --download-dir updates/
 ```
 
-`uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取索引，索引不存在时回退扫描 `v<version>` 目录并输出 JSON。`prepare-version` 会复制并校验目标版本的包，但不直接修改安装根或 `current.json`。
+`uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取索引，并补充扫描该通道 `v<version>` 与旧版全局 `v<version>` 历史目录后输出 JSON。`prepare-version` 会复制并校验目标版本的包，但不直接修改安装根或 `current.json`。
 
 已准备好的 zip 包可以交给标准 updater runtime 安装。runtime 会校验包大小和 SHA-256，安全解压到 `releases/<version>`，切换 `current.json`，并写入 `update-result.json`：
 
@@ -461,14 +480,14 @@ uot migrate-install-root \
 ```text
 <nas-root>/
 └── <app-id>/
-    ├── stable/
-    │   └── macos/
-    │       ├── latest.json
-    │       └── versions.json
-    └── v<version>/
-        └── macos/
-            ├── latest.json
-            └── package.zip
+    └── stable/
+        ├── macos/
+        │   ├── latest.json
+        │   └── versions.json
+        └── v<version>/
+            └── macos/
+                ├── latest.json
+                └── package.zip
 ```
 
 对应 `package.url`：
@@ -476,7 +495,7 @@ uot migrate-install-root \
 ```json
 {
   "package": {
-    "url": "my-tool/v1.0.6/macos/package.zip",
+    "url": "my-tool/stable/v1.0.6/macos/package.zip",
     "size": 123456,
     "sha256": "..."
   },
@@ -509,6 +528,51 @@ uot init
   ]
 }
 ```
+
+## Skill 安装与同步
+
+本仓库内置 Codex/OpenCode 可用的 UOT 接入 skill：
+
+```text
+skills/pyqt-nas-online-update/
+```
+
+从当前 checkout 安装到本机 Codex：
+
+```bash
+mkdir -p ~/.codex/skills
+rm -rf ~/.codex/skills/pyqt-nas-online-update
+cp -R skills/pyqt-nas-online-update ~/.codex/skills/
+```
+
+从当前 checkout 安装到本机 OpenCode：
+
+```bash
+mkdir -p ~/.config/opencode/skills
+rm -rf ~/.config/opencode/skills/pyqt-nas-online-update
+cp -R skills/pyqt-nas-online-update ~/.config/opencode/skills/
+```
+
+直接从 GitHub URL 安装：
+
+```bash
+tmp_dir="$(mktemp -d)"
+git clone --depth 1 https://github.com/tealiving/UpdateOnlineTool.git "$tmp_dir/UpdateOnlineTool"
+mkdir -p ~/.codex/skills ~/.config/opencode/skills
+rm -rf ~/.codex/skills/pyqt-nas-online-update ~/.config/opencode/skills/pyqt-nas-online-update
+cp -R "$tmp_dir/UpdateOnlineTool/skills/pyqt-nas-online-update" ~/.codex/skills/
+cp -R "$tmp_dir/UpdateOnlineTool/skills/pyqt-nas-online-update" ~/.config/opencode/skills/
+rm -rf "$tmp_dir"
+```
+
+如果本机习惯使用 `npx`，可以通过 `degit` 拉取子目录；这不是官方 npm 包，只是 GitHub 子目录安装方式：
+
+```bash
+npx degit tealiving/UpdateOnlineTool/skills/pyqt-nas-online-update ~/.codex/skills/pyqt-nas-online-update --force
+npx degit tealiving/UpdateOnlineTool/skills/pyqt-nas-online-update ~/.config/opencode/skills/pyqt-nas-online-update --force
+```
+
+当前项目没有发布 npm/npx 安装器；CLI/SDK 的正式安装方式仍是 Python 包，例如 `pip install -e .` 或从 Git URL 安装。
 
 ## 发布
 

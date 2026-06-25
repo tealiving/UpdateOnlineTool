@@ -30,7 +30,7 @@ config/settings.json
 - GUI 是否读取了正确的 `update-endpoint.json`。
 - `settings_file` 是否指向项目本地 `config/settings.json`。
 - `uot check --settings <settings_file> --app <app_id> --current-version <current_version>` 是否能看到目标版本。
-- NAS `stable/latest.json` 是否指向目标版本。
+- NAS `<app_id>/<channel>/latest.json` 或 `<app_id>/<channel>/<platform>/latest.json` 是否指向目标版本。
 - 当前版本号是否低于 NAS 最新版本。
 
 ## 升级包校验失败
@@ -38,7 +38,7 @@ config/settings.json
 检查：
 
 - `uot verify --settings <settings_file> --app <app_id>` 是否通过。
-- NAS version 目录中的 `package.zip` 是否完整。
+- NAS `<app_id>/<channel>/v<version>/` 版本目录中的 `package.zip` 是否完整；平台发布时检查 `<app_id>/<channel>/v<version>/<platform>/package.zip`。
 - `latest.json` 中的 size 和 SHA-256 是否与包一致。
 - 发布时是否重新压缩过包但没有重新 publish。
 

@@ -54,40 +54,83 @@ class NasReleaseSource:
             return self.root / app_id / channel / platform / "versions.json"
         return self.root / app_id / channel / "versions.json"
 
-    def version_dir(self, app_id: str, version: str, platform: str = "") -> Path:
+    def version_dir(self, app_id: str, version: str, platform: str = "", channel: str = "") -> Path:
         """解析版本目录。
 
         :param app_id: 应用标识。
         :param version: 版本号。
         :param platform: 可选平台；为空时使用旧版版本路径。
+        :param channel: 可选发布通道；为空时使用旧版全局版本路径。
         :return: 版本目录。
         """
+        if channel:
+            if platform:
+                return self.root / app_id / channel / f"v{version}" / platform
+            return self.root / app_id / channel / f"v{version}"
         if platform:
             return self.root / app_id / f"v{version}" / platform
         return self.root / app_id / f"v{version}"
 
-    def version_manifest_path(self, app_id: str, version: str, platform: str = "") -> Path:
+    def version_manifest_path(self, app_id: str, version: str, platform: str = "", channel: str = "") -> Path:
         """解析指定版本 manifest 路径。
 
         :param app_id: 应用标识。
         :param version: 版本号。
         :param platform: 可选平台；为空时使用旧版版本路径。
+        :param channel: 可选发布通道；为空时使用旧版全局版本路径。
         :return: 版本 manifest 路径。
         """
-        return self.version_dir(app_id, version, platform) / "latest.json"
+        return self.version_dir(app_id, version, platform, channel) / "latest.json"
 
-    def iter_version_manifest_paths(self, app_id: str, platform: str = "") -> list[Path]:
+    def iter_version_manifest_paths(self, app_id: str, platform: str = "", channel: str = "") -> list[Path]:
         """列出应用历史版本 manifest。
 
         :param app_id: 应用标识。
         :param platform: 可选平台；为空时使用旧版版本路径。
+        :param channel: 可选发布通道；为空时优先扫描旧版全局版本目录。
         :return: 按路径排序的 manifest 列表。
         """
         app_root = self.root / app_id
         if not app_root.is_dir():
             return []
         manifest_paths: list[Path] = []
-        for version_dir in app_root.glob("v*"):
+        if channel:
+            channel_paths = self._iter_version_manifests_under(app_root / channel, platform)
+            manifest_paths.extend(channel_paths)
+            channel_versions = self._manifest_version_keys(channel_paths, platform)
+            legacy_paths = [
+                path
+                for path in self._iter_version_manifests_under(app_root, platform)
+                if self._manifest_version_key(path, platform) not in channel_versions
+            ]
+            manifest_paths.extend(legacy_paths)
+            return sorted(manifest_paths)
+        manifest_paths.extend(self._iter_version_manifests_under(app_root, platform))
+        return sorted(manifest_paths)
+
+    def package_path(self, app_id: str, version: str, package_filename: str, platform: str = "", channel: str = "") -> Path:
+        """解析发布包路径。
+
+        :param app_id: 应用标识。
+        :param version: 版本号。
+        :param package_filename: 包文件名。
+        :param platform: 可选平台；为空时使用旧版版本路径。
+        :param channel: 可选发布通道；为空时使用旧版全局版本路径。
+        :return: 发布包路径。
+        """
+        return self.version_dir(app_id, version, platform, channel) / package_filename
+
+    def _iter_version_manifests_under(self, root: Path, platform: str = "") -> list[Path]:
+        """扫描指定根目录下的版本 manifest。
+
+        :param root: 应用根或通道根目录。
+        :param platform: 可选平台。
+        :return: 按路径排序的 manifest 列表。
+        """
+        if not root.is_dir():
+            return []
+        manifest_paths: list[Path] = []
+        for version_dir in root.glob("v*"):
             if not version_dir.is_dir():
                 continue
             candidate = version_dir / platform / "latest.json" if platform else version_dir / "latest.json"
@@ -95,16 +138,25 @@ class NasReleaseSource:
                 manifest_paths.append(candidate)
         return sorted(manifest_paths)
 
-    def package_path(self, app_id: str, version: str, package_filename: str, platform: str = "") -> Path:
-        """解析发布包路径。
+    def _manifest_version_keys(self, manifest_paths: list[Path], platform: str = "") -> set[str]:
+        """提取 manifest 路径集合中的版本目录名。
 
-        :param app_id: 应用标识。
-        :param version: 版本号。
-        :param package_filename: 包文件名。
-        :param platform: 可选平台；为空时使用旧版版本路径。
-        :return: 发布包路径。
+        :param manifest_paths: manifest 路径列表。
+        :param platform: 可选平台。
+        :return: 版本目录名集合。
         """
-        return self.version_dir(app_id, version, platform) / package_filename
+        return {self._manifest_version_key(path, platform) for path in manifest_paths}
+
+    def _manifest_version_key(self, manifest_path: Path, platform: str = "") -> str:
+        """从 manifest 路径推断版本目录名。
+
+        :param manifest_path: manifest 路径。
+        :param platform: 可选平台。
+        :return: 版本目录名，例如 v1.0.6。
+        """
+        if platform and manifest_path.parent.name == platform:
+            return manifest_path.parent.parent.name
+        return manifest_path.parent.name
 
     def resolve_package_path(self, package_url: str) -> Path:
         """解析 manifest 中的相对包路径。

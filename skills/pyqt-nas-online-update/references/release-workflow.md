@@ -124,9 +124,11 @@ uot publish `
   --version <target_version> `
   --platform <platform> `
   --package dist\<product_name>_<target_version>.zip `
-  --notes "发布 <target_version>" `
+  --notes-file docs\release-notes\<target_version>.md `
   --min-supported-version <minimum_supported_version>
 ```
+
+`--notes` 适合短说明，`--notes-file` 适合直接复用 changelog 文件。发布后的说明会写入 manifest 和 `versions.json`，GUI/SDK 读取历史版本说明时直接调用 `list-remote` 或 `show-version`。
 
 校验：
 
@@ -189,7 +191,7 @@ uot-updater launch-current --install-root <install_root>
 ```
 
 `install-prepared` 和 `apply-update` 会校验包大小与 SHA-256，安全解压到 `releases/<target_version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 会创建 `update.lock` 防止并发更新；失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段是 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是 UI 阶段提示，不是下载字节进度。`--wait-pid` 等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT`；`--restart` 会切换后启动当前入口并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度要由 updater 窗口或外部轮询进程读取状态文件。自定义 updater 仍可只复用 `prepare-version` 和 SDK。
-`uot publish` 会维护 `versions.json` 版本索引；`list-remote` 优先读取索引，索引不存在时回退扫描 `v<version>` 目录。
+`uot publish` 会维护通道 `versions.json` 版本索引，并把包写入 `<app_id>/<channel>/v<target_version>/`。`list-remote` 优先读取索引，并补充扫描通道版本目录和旧版 `<app_id>/v<version>/` 历史目录。同一版本号可在不同 channel 远端存放不同包，但安装根仍使用 `releases/<target_version>`；同一客户端从测试包升级到正式包时应使用递增版本号，或显式 `install-prepared --force` 覆盖同版本 release。
 
 诊断包：
 
@@ -232,14 +234,14 @@ uot switch-installed --install-root <install_root> --version <target_version>
 ```text
 <nas_root>\
 └── <app_id>\
-    ├── stable\
-    │   └── <platform>\
-    │       ├── latest.json
-    │       └── versions.json
-    └── v<target_version>\
-        └── <platform>\
-            ├── latest.json
-            └── package.zip
+    └── stable\
+        ├── <platform>\
+        │   ├── latest.json
+        │   └── versions.json
+        └── v<target_version>\
+            └── <platform>\
+                ├── latest.json
+                └── package.zip
 ```
 
 ## 7. 本地升级验证

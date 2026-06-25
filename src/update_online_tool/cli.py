@@ -140,6 +140,7 @@ def _build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     publish.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
     publish.add_argument("--notes", default="", help="Release notes.")
+    publish.add_argument("--notes-file", default=None, type=Path, help="Read release notes from a text file.")
     publish.add_argument("--min-supported-version", default="", help="Minimum supported current version.")
     publish.add_argument("--mandatory", action="store_true", help="Mark this update as mandatory.")
     publish.add_argument("--published-at", default="", help="ISO timestamp. Defaults to current UTC time.")
@@ -477,12 +478,13 @@ def _publish(args: argparse.Namespace) -> int:
     source_package_path = Path(args.package)
     if not source_package_path.is_file():
         raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {source_package_path}")
-    target_package_path = source.package_path(args.app, args.version, settings.package_filename, platform)
+    notes = _resolve_publish_notes(args)
+    target_package_path = source.package_path(args.app, args.version, settings.package_filename, platform, channel)
     target_package_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_package_path, target_package_path)
     package_size = target_package_path.stat().st_size
     package_sha256 = _sha256_of(target_package_path)
-    relative_package_url = _package_url(args.app, args.version, settings.package_filename, platform)
+    relative_package_url = _package_url(args.app, args.version, settings.package_filename, platform, channel)
     published_at = args.published_at.strip() or datetime.now(timezone.utc).isoformat()
     payload: dict[str, object] = {
         "schema_version": 2,
@@ -492,7 +494,7 @@ def _publish(args: argparse.Namespace) -> int:
         "mandatory": bool(args.mandatory),
         "min_supported_version": min_supported_version,
         "published_at": published_at,
-        "notes": args.notes or f"v{args.version} release",
+        "notes": notes,
         "package": {
             "url": relative_package_url,
             "size": package_size,
@@ -511,7 +513,7 @@ def _publish(args: argparse.Namespace) -> int:
             key_id=args.key_id,
         )
     manifest = UpdateManifest.from_payload(manifest_payload)
-    _write_json(source.version_dir(args.app, args.version, platform) / "latest.json", manifest_payload)
+    _write_json(source.version_dir(args.app, args.version, platform, channel) / "latest.json", manifest_payload)
     _write_json(source.manifest_path(args.app, channel, platform), manifest_payload)
     _update_versions_index(
         source=source,
@@ -614,7 +616,7 @@ def _list_remote(args: argparse.Namespace) -> int:
                 "data_schema_version": item.manifest.data_schema_version,
                 "signature_algorithm": item.manifest.signature.algorithm if item.manifest.signature else "",
                 "signature_key_id": item.manifest.signature.key_id if item.manifest.signature else "",
-                "notes": item.manifest.notes,
+                "notes": item.notes,
             }
             for item in versions
         ],
@@ -639,6 +641,27 @@ def _manifest_policy_payload(args: argparse.Namespace) -> dict[str, object]:
     if data_schema_version:
         payload["data_schema_version"] = data_schema_version
     return payload
+
+
+def _resolve_publish_notes(args: argparse.Namespace) -> str:
+    """解析 publish 使用的版本说明。
+
+    :param args: 命令参数。
+    :return: 版本说明文本。
+    """
+    notes_file = getattr(args, "notes_file", None)
+    if notes_file is not None:
+        path = Path(notes_file)
+        if not path.is_file():
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"notes file not found: {path}")
+        notes = path.read_text(encoding="utf-8").strip()
+        if not notes:
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"notes file is empty: {path}")
+        return notes
+    notes = str(getattr(args, "notes", "") or "").strip()
+    if notes:
+        return notes
+    return f"v{args.version} release"
 
 
 def _show_version(args: argparse.Namespace) -> int:
@@ -947,7 +970,7 @@ def _update_versions_index(
             existing_versions = [item for item in payload["versions"] if isinstance(item, dict)]
     entry = {
         "version": manifest.version,
-        "manifest_url": _manifest_url(app_id, manifest.version, platform),
+        "manifest_url": _manifest_url(app_id, manifest.version, platform, channel),
         "package_url": manifest.package.url,
         "published_at": manifest.published_at,
         "mandatory": manifest.mandatory,
@@ -977,25 +1000,33 @@ def _update_versions_index(
     )
 
 
-def _package_url(app_id: str, version: str, package_filename: str, platform: str) -> str:
+def _package_url(app_id: str, version: str, package_filename: str, platform: str, channel: str) -> str:
     """生成 manifest package.url。
 
     :param app_id: 应用标识。
     :param version: 版本号。
     :param package_filename: 包文件名。
     :param platform: 可选平台。
+    :param channel: 发布通道。
     :return: NAS 根目录下的相对包路径。
     """
     if platform:
-        return f"{app_id}/v{version}/{platform}/{package_filename}"
-    return f"{app_id}/v{version}/{package_filename}"
+        return f"{app_id}/{channel}/v{version}/{platform}/{package_filename}"
+    return f"{app_id}/{channel}/v{version}/{package_filename}"
 
 
-def _manifest_url(app_id: str, version: str, platform: str) -> str:
-    """生成版本 manifest 相对路径。"""
+def _manifest_url(app_id: str, version: str, platform: str, channel: str) -> str:
+    """生成版本 manifest 相对路径。
+
+    :param app_id: 应用标识。
+    :param version: 版本号。
+    :param platform: 可选平台。
+    :param channel: 发布通道。
+    :return: NAS 根目录下的版本 manifest 相对路径。
+    """
     if platform:
-        return f"{app_id}/v{version}/{platform}/latest.json"
-    return f"{app_id}/v{version}/latest.json"
+        return f"{app_id}/{channel}/v{version}/{platform}/latest.json"
+    return f"{app_id}/{channel}/v{version}/latest.json"
 
 
 def _normalize_optional_platform(platform: str) -> str:

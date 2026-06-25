@@ -52,15 +52,17 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
 
 5. Publish and verify:
    - Compress the update directory contents, not the whole install directory.
-   - Publish the package to NAS with `uot publish`; include `--platform <platform>` for multi-platform projects.
+   - Publish the package to NAS with `uot publish`; include `--platform <platform>` for multi-platform projects and `--notes-file <path>` for long release notes.
    - Verify NAS metadata and package integrity with `uot verify`; include the same platform when used.
    - Use `uot keygen --public-output <public_key>` once per release trust domain, `uot publish --sign-key <private_key>`, and `uot verify --signature-key <public_key>` when manifest tamper detection is required.
-   - Check that NAS contains channel `latest.json` and versioned `package.zip`, under the platform subdirectory when platform is set.
+   - Check that NAS contains channel `latest.json`, channel `versions.json`, and channel-scoped `v<version>/package.zip`, under the platform subdirectory when platform is set.
+   - Treat `notes` as the per-version release summary and `versions.json` as the historical source for GUI/SDK version pickers; use `list-remote` or `show-version` to display it.
    - Use `uot list-remote`, `uot show-version`, and `uot prepare-version` when the GUI needs a historical version picker.
    - Use publish policy flags when needed: `--allow-downgrade`, `--hidden`, `--requires-confirmation`, `--rollout-percent`, and `--data-schema-version`.
    - Use `uot list-remote --include-hidden` for operator-only version pickers; hidden versions are filtered from normal lists and normal update checks.
-   - Expect `uot publish` to maintain `versions.json`; `list-remote` falls back to scanning `v<version>` directories when the index is absent.
+   - Expect `uot publish` to maintain channel `versions.json`; `list-remote` reads the index, supplements channel-scoped `v<version>` directories, and remains compatible with legacy global `<app-id>/v<version>` releases.
    - Treat `prepare-version` as copy-and-verify only; use `uot install-prepared` or `uot apply-update` when the project wants UOT's standard runtime to install the selected package and change `current.json`.
+   - Treat same-version cross-channel packages as remote storage isolation only. Local installs still use `releases/<version>` and version comparison still keys on the version number; use increasing versions for a client moving from test to stable, or explicitly use `install-prepared --force` to replace a same-version local release.
    - Prefer packaging `uot-updater` as the final application updater executable; use `uot write-updater-spec` to generate its PyInstaller spec, then pass the built artifact to `uot assemble-pyinstaller --updater-bundle <path>`. Keep full `uot` for developer, CI, and release-operator workflows.
    - Use `uot install-prepared --signature-key <key> --dry-run` before applying a package in automation; runtime uses `update.lock` to reject concurrent updates, writes `update-result.json` for successful and failed installs, and refreshes `update-status.json` with phase-level UI status.
    - Use `--wait-pid <old_gui_pid> --wait-timeout <seconds> --restart` when the standard runtime should wait for the old GUI, install the selected release, and restart the current entry.

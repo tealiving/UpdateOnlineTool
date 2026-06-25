@@ -65,14 +65,85 @@ def test_cli_publish_writes_package_and_latest_json(tmp_path: Path) -> None:
 
     latest = nas_root / "automation-manual-studio" / "stable" / "latest.json"
     versions_index = nas_root / "automation-manual-studio" / "stable" / "versions.json"
-    copied = nas_root / "automation-manual-studio" / "v1.0.6" / "package.zip"
+    copied = nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip"
     payload = json.loads(latest.read_text(encoding="utf-8"))
     index_payload = json.loads(versions_index.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert copied.read_bytes() == b"release"
     assert payload["package"]["sha256"] == hashlib.sha256(b"release").hexdigest()
     assert index_payload["versions"][0]["version"] == "1.0.6"
-    assert index_payload["versions"][0]["manifest_url"] == "automation-manual-studio/v1.0.6/latest.json"
+    assert index_payload["versions"][0]["manifest_url"] == "automation-manual-studio/stable/v1.0.6/latest.json"
+
+
+def test_cli_publish_can_read_notes_from_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """验证 publish 可从文件读取版本说明并输出到历史列表。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    notes_file = tmp_path / "release-notes.md"
+    package.write_bytes(b"release")
+    notes_file.write_text("## 1.0.6\n- fix startup\n- improve update history\n", encoding="utf-8")
+    _settings(settings_path, nas_root)
+
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--package",
+                str(package),
+                "--notes-file",
+                str(notes_file),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    exit_code = main(["list-remote", "--settings", str(settings_path), "--app", "automation-manual-studio"])
+    payload = json.loads(capsys.readouterr().out)
+    latest = json.loads((nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(encoding="utf-8"))
+    versions_index = json.loads(
+        (nas_root / "automation-manual-studio" / "stable" / "versions.json").read_text(encoding="utf-8")
+    )
+
+    assert exit_code == 0
+    assert latest["notes"] == "## 1.0.6\n- fix startup\n- improve update history"
+    assert versions_index["versions"][0]["notes"] == "## 1.0.6\n- fix startup\n- improve update history"
+    assert payload["versions"][0]["notes"] == "## 1.0.6\n- fix startup\n- improve update history"
+
+
+def test_cli_publish_missing_notes_file_does_not_copy_package(tmp_path: Path) -> None:
+    """验证 notes 文件缺失时不会留下半成品发布包。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    package.write_bytes(b"release")
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+            "--notes-file",
+            str(tmp_path / "missing.md"),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip").exists()
 
 
 def test_cli_publish_can_isolate_package_by_platform(tmp_path: Path) -> None:
@@ -105,15 +176,78 @@ def test_cli_publish_can_isolate_package_by_platform(tmp_path: Path) -> None:
 
     latest = nas_root / "automation-manual-studio" / "stable" / "macos" / "latest.json"
     versions_index = nas_root / "automation-manual-studio" / "stable" / "macos" / "versions.json"
-    copied = nas_root / "automation-manual-studio" / "v1.0.6" / "macos" / "package.zip"
+    copied = nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "macos" / "package.zip"
     payload = json.loads(latest.read_text(encoding="utf-8"))
     index_payload = json.loads(versions_index.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert copied.read_bytes() == b"macos-release"
     assert payload["platform"] == "macos"
-    assert payload["package"]["url"] == "automation-manual-studio/v1.0.6/macos/package.zip"
+    assert payload["package"]["url"] == "automation-manual-studio/stable/v1.0.6/macos/package.zip"
     assert index_payload["platform"] == "macos"
-    assert index_payload["versions"][0]["manifest_url"] == "automation-manual-studio/v1.0.6/macos/latest.json"
+    assert index_payload["versions"][0]["manifest_url"] == "automation-manual-studio/stable/v1.0.6/macos/latest.json"
+
+
+def test_cli_publish_can_store_same_version_remotely_by_channel(tmp_path: Path) -> None:
+    """验证同一版本号可在不同通道远端存放不同包。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None
+    """
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    test_package = tmp_path / "test.zip"
+    stable_package = tmp_path / "stable.zip"
+    test_package.write_bytes(b"test-release")
+    stable_package.write_bytes(b"stable-release")
+    _settings(settings_path, nas_root)
+
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--channel",
+                "test",
+                "--package",
+                str(test_package),
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--channel",
+                "stable",
+                "--package",
+                str(stable_package),
+            ]
+        )
+        == 0
+    )
+
+    test_copied = nas_root / "automation-manual-studio" / "test" / "v1.0.6" / "package.zip"
+    stable_copied = nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip"
+    test_latest = json.loads((nas_root / "automation-manual-studio" / "test" / "latest.json").read_text(encoding="utf-8"))
+    stable_latest = json.loads(
+        (nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(encoding="utf-8")
+    )
+    assert test_copied.read_bytes() == b"test-release"
+    assert stable_copied.read_bytes() == b"stable-release"
+    assert test_latest["package"]["url"] == "automation-manual-studio/test/v1.0.6/package.zip"
+    assert stable_latest["package"]["url"] == "automation-manual-studio/stable/v1.0.6/package.zip"
 
 
 def test_cli_publish_writes_version_policy_and_list_remote_filters_hidden(
@@ -467,7 +601,7 @@ def test_cli_show_version_outputs_one_manifest(tmp_path: Path, capsys: pytest.Ca
     assert exit_code == 0
     assert payload["version"] == "1.0.6"
     assert payload["platform"] == "macos"
-    assert payload["package"]["url"] == "automation-manual-studio/v1.0.6/macos/package.zip"
+    assert payload["package"]["url"] == "automation-manual-studio/stable/v1.0.6/macos/package.zip"
 
 
 def test_cli_prepare_version_copies_specific_package(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
