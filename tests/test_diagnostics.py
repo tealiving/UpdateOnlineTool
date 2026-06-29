@@ -42,6 +42,7 @@ def test_collect_diagnostics_reports_versions_and_failed_update(tmp_path: Path) 
     report = collect_diagnostics(install_root=install_root)
 
     assert report["files"]["current_json"] is True
+    assert report["path"]["write_probe"]["ok"] is True
     assert report["files"]["update_status_json"] is True
     assert report["update_status"]["payload"]["phase"] == "failed"
     assert report["files"]["update_lock"] is True
@@ -59,6 +60,15 @@ def test_collect_diagnostics_reports_missing_current_entry(tmp_path: Path) -> No
     report = collect_diagnostics(install_root=install_root)
 
     assert any("current release entry is missing" in problem for problem in report["problems"])
+
+
+def test_collect_diagnostics_reports_unc_hints() -> None:
+    """验证 UNC-like 安装根会输出路径提示。"""
+    report = collect_diagnostics(install_root=Path("//server/share/MyTool"))
+
+    assert report["path"]["is_unc_like"] is True
+    assert any("UNC path detected" in hint for hint in report["path"]["hints"])
+    assert any("install root is not writable" in problem for problem in report["problems"])
 
 
 def test_write_diagnostic_archive_includes_allowed_files(tmp_path: Path) -> None:

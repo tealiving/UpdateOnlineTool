@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 
@@ -164,7 +164,15 @@ class NasReleaseSource:
         :param package_url: package.url 字段。
         :return: 本地/NAS 文件路径。
         """
-        relative_path = Path(package_url)
-        if relative_path.is_absolute() or ".." in relative_path.parts:
+        url = str(package_url or "").strip()
+        if not url or url == ".":
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "package.url must be a non-empty relative path")
+        if "\\" in url:
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID,
+                f"unsafe package url: {package_url}; use a forward-slash relative path, not UNC or Windows path syntax",
+            )
+        relative_path = PurePosixPath(url)
+        if relative_path.is_absolute() or ".." in relative_path.parts or any(":" in part for part in relative_path.parts):
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe package url: {package_url}")
-        return self.root / relative_path
+        return self.root.joinpath(*relative_path.parts)

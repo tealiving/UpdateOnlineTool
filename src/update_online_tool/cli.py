@@ -533,7 +533,7 @@ def _verify(args: argparse.Namespace) -> int:
     :return: 进程退出码。
     """
     settings = _load_settings_arg(args)
-    source = NasReleaseSource(settings.nas_root)
+    source = NasReleaseSource(settings.selected_nas_root())
     source.ensure_available()
     channel = args.channel or settings.default_channel
     platform = _normalize_optional_platform(args.platform)

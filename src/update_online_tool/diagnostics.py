@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import zipfile
 from pathlib import Path
@@ -22,6 +23,7 @@ def collect_diagnostics(*, install_root: Path, entry_name: str = "") -> dict[str
         "generated_at": int(time.time()),
         "install_root": str(root),
         "exists": root.exists(),
+        "path": _path_status(root),
         "files": _file_status(root),
         "current": _read_json_file(root / "current.json"),
         "update_result": _read_json_file(root / "update-result.json"),
@@ -66,6 +68,47 @@ def _file_status(root: Path) -> dict[str, bool]:
         "releases_dir": (root / "releases").is_dir(),
         "logs_dir": (root / "logs").is_dir(),
     }
+
+
+def _path_status(root: Path) -> dict[str, Any]:
+    """生成安装根路径和写权限摘要。"""
+    return {
+        "absolute": str(root.resolve()) if root.exists() else str(root.absolute()),
+        "is_absolute": root.is_absolute(),
+        "is_unc_like": _is_unc_like(root),
+        "write_probe": _write_probe(root),
+        "hints": _path_hints(root),
+    }
+
+
+def _is_unc_like(root: Path) -> bool:
+    """判断路径是否像 Windows UNC。"""
+    return str(root).replace("/", "\\").startswith("\\\\")
+
+
+def _path_hints(root: Path) -> list[str]:
+    """返回路径相关提示。"""
+    if _is_unc_like(root):
+        return [
+            "UNC path detected; in JSON settings escape backslashes as \\\\server\\\\share or generate settings with uot init",
+            "manifest package.url must remain a forward-slash relative path, not a UNC path",
+        ]
+    return []
+
+
+def _write_probe(root: Path) -> dict[str, Any]:
+    """用短临时文件探测安装根是否可写。"""
+    if not root.exists():
+        return {"ok": False, "error": "install root does not exist"}
+    if not root.is_dir():
+        return {"ok": False, "error": "install root is not a directory"}
+    probe_path = root / f".uot-doctor-write-test.{os.getpid()}.tmp"
+    try:
+        probe_path.write_text("ok", encoding="utf-8")
+        probe_path.unlink()
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "error": ""}
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
@@ -163,8 +206,13 @@ def _detect_problems(report: dict[str, Any]) -> list[str]:
     """根据诊断报告生成常见问题。"""
     problems: list[str] = []
     files = report.get("files")
+    path = report.get("path")
     if not report.get("exists"):
         problems.append("install root does not exist")
+    if isinstance(path, dict):
+        write_probe = path.get("write_probe")
+        if isinstance(write_probe, dict) and write_probe.get("ok") is False:
+            problems.append(f"install root is not writable: {write_probe.get('error', '')}")
     if isinstance(files, dict):
         if not files.get("current_json"):
             problems.append("current.json is missing")

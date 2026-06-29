@@ -11,8 +11,6 @@ import subprocess
 import sys
 import time
 import zipfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -20,6 +18,7 @@ from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.installed import switch_installed_version
+from update_online_tool.locks import runtime_lock
 from update_online_tool.manifest import UpdateManifest
 
 
@@ -127,7 +126,7 @@ def install_prepared_package(
                 ),
             )
             wait_for_process_exit(pid=wait_pid, timeout_seconds=wait_timeout)
-        with _runtime_lock(root, action="install_prepared", dry_run=dry_run):
+        with runtime_lock(root, action="install_prepared", dry_run=dry_run):
             if not dry_run:
                 write_update_status(
                     root,
@@ -185,6 +184,7 @@ def install_prepared_package(
                     entry_name=resolved_entry_name,
                     app_id=manifest.app_id,
                     platform=manifest.platform,
+                    use_lock=False,
                 )
             result = RuntimeResult(
                 success=True,
@@ -310,7 +310,7 @@ def rollback_installation(*, install_root: Path, entry_name: str = "") -> Runtim
     previous_version = ""
     release_dir = root / "releases"
     try:
-        with _runtime_lock(root, action="rollback", dry_run=False):
+        with runtime_lock(root, action="rollback", dry_run=False):
             current_payload = _read_json_object(root / "current.json", "current.json")
             current_version = str(current_payload.get("version", "")).strip()
             previous_version = str(current_payload.get("previous_version", "")).strip()
@@ -320,6 +320,7 @@ def rollback_installation(*, install_root: Path, entry_name: str = "") -> Runtim
                 install_root=root,
                 version=previous_version,
                 entry_name=entry_name,
+                use_lock=False,
             )
             result = RuntimeResult(
                 success=True,
@@ -357,7 +358,7 @@ def launch_current(*, install_root: Path) -> subprocess.Popen[bytes]:
     if not entry_path.exists():
         raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"current entry not found: {entry_path}")
     if _is_macos_app_bundle(entry_path) and sys.platform == "darwin":
-        return subprocess.Popen(["open", "-n", str(entry_path)], cwd=str(entry_path.parent), close_fds=True)
+        return subprocess.Popen([_macos_open_executable(), "-n", str(entry_path)], cwd=str(entry_path.parent), close_fds=True)
     return subprocess.Popen([str(entry_path)], cwd=str(entry_path.parent))
 
 
@@ -373,6 +374,12 @@ def wait_for_process_exit(*, pid: int, timeout_seconds: float = 60.0, poll_inter
                 f"process {pid} did not exit within {timeout_seconds:g}s; please close the application and retry",
             )
         time.sleep(max(0.01, float(poll_interval)))
+
+
+def _macos_open_executable() -> str:
+    """返回 macOS open 命令路径。"""
+    path = Path("/usr/bin/open")
+    return str(path) if path.is_file() else "open"
 
 
 def _is_process_alive(pid: int) -> bool:
@@ -430,31 +437,6 @@ def write_update_status(install_root: Path, status: RuntimeStatus) -> None:
     """写入 update-status.json。"""
     path = Path(install_root) / "update-status.json"
     path.write_text(json.dumps(status.to_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-@contextmanager
-def _runtime_lock(install_root: Path, *, action: str, dry_run: bool) -> Iterator[None]:
-    """用 update.lock 防止同一安装根并发更新。"""
-    if dry_run:
-        yield
-        return
-    root = Path(install_root)
-    root.mkdir(parents=True, exist_ok=True)
-    lock_path = root / "update.lock"
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-    try:
-        fd = os.open(lock_path, flags)
-    except FileExistsError as exc:
-        raise UpdateError(UpdateErrorCode.UPDATE_LOCKED, f"update lock exists: {lock_path}") from exc
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
-            lock_file.write(json.dumps({"pid": os.getpid(), "action": action}, ensure_ascii=False) + "\n")
-        yield
-    finally:
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            return
 
 
 def _failure_result(

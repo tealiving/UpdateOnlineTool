@@ -138,6 +138,22 @@ uot init --app my-tool --output update-endpoint.json --nas-root D:\Nas --setting
 }
 ```
 
+多网络 NAS 示例：
+
+```json
+{
+  "nas": {
+    "root": "D:\\InternalNas",
+    "roots": [
+      "D:\\InternalNas",
+      "\\\\nas-server\\release-share\\UpdateOnlineTool"
+    ]
+  }
+}
+```
+
+读取操作会按 `nas.roots` 顺序选择第一个可访问路径。发布操作仍写入主 `nas.root`，避免因为网络切换把正式包发布到临时 fallback 路径。
+
 不要把 NAS 用户名或密码写入该文件。Windows 使用凭据管理器或当前 SMB 会话；macOS 使用钥匙串或已挂载的 SMB 卷。
 
 SDK 解析 settings 的优先级：
@@ -264,10 +280,10 @@ uot show-version --settings config\settings.json --app my-tool --version 1.0.4 -
 uot prepare-version --settings config\settings.json --app my-tool --version 1.0.4 --platform windows --download-dir updates
 ```
 
-`prepare-version` 只复制并校验包，不直接改安装根或 `current.json`。已准备包可以交给标准 runtime 安装：
+`prepare-version` 只复制并校验包到 `updates\<app>\<channel>\<platform-or-any>\<version>\package.zip`，不直接改安装根或 `current.json`。调用方应使用命令输出里的 `package_path`。已准备包可以交给标准 runtime 安装：
 
 ```powershell
-uot install-prepared --install-root D:\Tools\MyTool --package updates\package.zip --manifest updates\latest.json
+uot install-prepared --install-root D:\Tools\MyTool --package updates\my-tool\stable\windows\1.0.4\package.zip --manifest updates\latest.json
 uot apply-update --pending D:\Tools\MyTool\pending-update.json
 uot rollback --install-root D:\Tools\MyTool
 ```
@@ -311,7 +327,7 @@ uot install-prepared --install-root D:\Tools\MyTool --package updates\package.zi
 uot doctor --install-root D:\Tools\MyTool --output diagnostics\doctor.json --archive diagnostics\doctor.zip
 ```
 
-诊断报告包含安装根关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
+诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。NAS 根路径可以是 UNC 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符或反斜杠路径。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
 
 旧版平铺安装根可迁移到新架构：
 

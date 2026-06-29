@@ -336,7 +336,7 @@ def test_launch_current_uses_open_n_for_macos_app_bundle(tmp_path: Path, monkeyp
     runtime.launch_current(install_root=install_root)
 
     assert launched["args"] == (
-        "open",
+        runtime._macos_open_executable(),
         "-n",
         str(install_root / "releases" / "1.0.0" / "MyTool.app"),
     )
@@ -372,7 +372,7 @@ def test_launch_current_falls_back_to_entry_path_when_executable_missing(
     assert launched
     # 使用 .app 启动时，首参数应包含 open -n 命令。
     assert launched[0] == (
-        "open",
+        runtime._macos_open_executable(),
         "-n",
         str(install_root / "releases" / "1.0.0" / "MyTool.app"),
     )

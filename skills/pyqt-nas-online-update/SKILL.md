@@ -25,6 +25,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - `current_version`
    - `target_version`
    - `nas_root`
+   - optional ordered `nas_roots` for intranet/extranet fallback
    - `settings_file`, normally `config/settings.json`
    - `endpoint_file`, normally `update-endpoint.json`
 
@@ -37,6 +38,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Prefer project-local settings for build defaults: `config/settings.json`.
    - Prefer a project update endpoint file: `update-endpoint.json`.
    - Use `uot init` with `--nas-root` so NAS read/write checks run.
+   - When a project must work on multiple networks, configure `nas.roots` as an ordered list in `settings.json`. SDK reads/checks/verifies use the first accessible root. Publishing still writes to the primary `nas.root`; use explicit settings or publish separately when synchronizing multiple NAS roots.
    - Use `--skip-nas-check` only for offline scaffolding.
    - Use `uot migrate-install-root` when converting an existing flat install directory into `releases/<version>` plus `current.json`.
    - Package `update-endpoint.json` with the app when the GUI reads it at runtime.
@@ -62,6 +64,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Use `uot list-remote --include-hidden` for operator-only version pickers; hidden versions are filtered from normal lists and normal update checks.
    - Expect `uot publish` to maintain channel `versions.json`; `list-remote` reads the index, supplements channel-scoped `v<version>` directories, and remains compatible with legacy global `<app-id>/v<version>` releases.
    - Treat `prepare-version` as copy-and-verify only; use `uot install-prepared` or `uot apply-update` when the project wants UOT's standard runtime to install the selected package and change `current.json`.
+   - Use the `package_path` returned by `prepare-version`; prepared packages are stored under `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/`.
    - Treat same-version cross-channel packages as remote storage isolation only. Local installs still use `releases/<version>` and version comparison still keys on the version number; use increasing versions for a client moving from test to stable, or explicitly use `install-prepared --force` to replace a same-version local release.
    - Prefer packaging `uot-updater` as the final application updater executable; use `uot write-updater-spec` to generate its PyInstaller spec, then pass the built artifact to `uot assemble-pyinstaller --updater-bundle <path>`. Keep full `uot` for developer, CI, and release-operator workflows.
    - Use `uot install-prepared --signature-key <key> --dry-run` before applying a package in automation; runtime uses `update.lock` to reject concurrent updates, writes `update-result.json` for successful and failed installs, and refreshes `update-status.json` with phase-level UI status.
@@ -72,7 +75,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Start from an older install root.
    - For legacy flat installs, generate and verify a migration package with `uot write-migration-package` and `uot verify-migration-package`, then run `uot migrate-install-root --dry-run` before enabling the new runtime flow.
    - Use `uot list-installed` to inspect local releases when validating rollback or local version switching.
-   - Use `uot switch-installed` only when the target release already exists under the install root.
+   - Use `uot switch-installed` only when the target release already exists under the install root; it uses `update.lock` and should not run concurrently with install or rollback.
    - Use `uot rollback` after a switch or runtime install when `current.json.previous_version` should become active again.
    - Check that update discovery sees the target version.
    - Trigger update from GUI or CLI.
@@ -81,6 +84,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Confirm `update-status.json.phase` is `success`; on failure, the GUI should read `phase`, `message`, `version`, and `previous_version` on next launch. Live progress after the old GUI exits requires an updater-owned window or polling process.
    - Confirm no stale `update.lock` remains after a successful or failed runtime update.
    - Use `uot doctor --install-root <install_root> --archive <doctor.zip>` to collect a support bundle when an update fails.
+   - For UNC paths, keep the UNC or mounted path only in `nas.root`/`nas.roots` settings. Manifest `package.url` must be a forward-slash relative path, never a UNC path, drive-letter path, or backslash path.
    - Inspect updater and launcher logs if the GUI does not restart or the version does not switch.
 
 ## References

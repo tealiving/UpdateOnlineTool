@@ -32,6 +32,7 @@ class UpdateToolSettings:
     default_minimum_version: str = "1.0.0"
     package_filename: str = "package.zip"
     updater_executable_name: str = "Updater.exe"
+    nas_roots: tuple[Path, ...] = ()
 
     @classmethod
     def load(
@@ -73,7 +74,12 @@ class UpdateToolSettings:
         nas_payload = payload.get("nas")
         if not isinstance(nas_payload, dict):
             raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "nas must be an object")
-        nas_root = _require_text(nas_payload, "root")
+        nas_roots = _nas_roots(nas_payload)
+        nas_root_text = nas_payload.get("root")
+        if isinstance(nas_root_text, str) and nas_root_text.strip():
+            nas_root = Path(nas_root_text.strip())
+        else:
+            nas_root = nas_roots[0]
         publish_payload = payload.get("publish")
         if publish_payload is None:
             publish_payload = {}
@@ -85,7 +91,8 @@ class UpdateToolSettings:
         if not isinstance(updater_payload, dict):
             raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "updater must be an object")
         return cls(
-            nas_root=Path(nas_root),
+            nas_root=nas_root,
+            nas_roots=nas_roots,
             default_channel=_optional_text(publish_payload, "default_channel", "stable"),
             default_minimum_version=_optional_text(publish_payload, "default_minimum_version", "1.0.0"),
             package_filename=_optional_text(publish_payload, "package_filename", "package.zip"),
@@ -95,6 +102,32 @@ class UpdateToolSettings:
                 "Updater.exe",
             ),
         )
+
+    def selected_nas_root(self) -> Path:
+        """返回第一个可访问 NAS 根目录；都不可访问时返回主根目录。"""
+        for root in self.nas_roots or (self.nas_root,):
+            if _is_readable_directory(root):
+                return root
+        return self.nas_root
+
+
+def _is_readable_directory(path: Path) -> bool:
+    try:
+        return path.is_dir() and os.access(path, os.R_OK)
+    except OSError:
+        return False
+
+
+def _nas_roots(payload: dict[str, Any]) -> tuple[Path, ...]:
+    roots_value = payload.get("roots")
+    if roots_value is not None:
+        if not isinstance(roots_value, list):
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "roots must be a list")
+        roots = tuple(Path(item.strip()) for item in roots_value if isinstance(item, str) and item.strip())
+        if roots:
+            return roots
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "roots must contain at least one non-empty string")
+    return (Path(_require_text(payload, "root")),)
 
 
 def _require_text(payload: dict[str, Any], key: str) -> str:

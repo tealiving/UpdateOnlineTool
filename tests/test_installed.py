@@ -76,6 +76,26 @@ def test_switch_installed_version_supports_macos_app_with_different_inner_execut
     assert switched.entry_kind == "app_bundle"
 
 
+def test_switch_installed_version_supports_legacy_macos_executable_after_app_bundle(tmp_path: Path) -> None:
+    """验证 .app 新版本可切回旧裸入口版本。"""
+    install_root = _write_install_root(tmp_path, current_version="1.1.0", entry_name="MyTool.app", platform="macos")
+    _write_release_entry(install_root, "1.0.8", "MyTool", "legacy")
+
+    versions = list_installed_versions(install_root=install_root)
+    switched = switch_installed_version(install_root=install_root, version="1.0.8")
+    payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+
+    assert {item.version: item.entry_exists for item in versions}["1.0.8"] is True
+    assert switched.entry_path == install_root / "releases" / "1.0.8" / "MyTool"
+    assert switched.entry_kind == "executable"
+    assert payload["executable"] == "MyTool"
+    assert payload["entry"] == {
+        "kind": "executable",
+        "path": "MyTool",
+        "platform": "macos",
+    }
+
+
 def test_switch_installed_version_preserves_unknown_current_json_fields(tmp_path: Path) -> None:
     """验证切换版本时保留 current.json 中的扩展字段。"""
     install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
@@ -102,6 +122,18 @@ def test_switch_installed_version_rejects_missing_release(tmp_path: Path) -> Non
         switch_installed_version(install_root=install_root, version="1.0.4")
 
     assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
+
+
+def test_switch_installed_version_rejects_existing_update_lock(tmp_path: Path) -> None:
+    """验证本地版本切换复用安装根 update.lock。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
+    (install_root / "update.lock").write_text('{"pid": 123}\n', encoding="utf-8")
+
+    with pytest.raises(UpdateError) as error:
+        switch_installed_version(install_root=install_root, version="1.0.4")
+
+    assert error.value.code is UpdateErrorCode.UPDATE_LOCKED
 
 
 def test_migrate_install_root_copies_flat_install_into_release(tmp_path: Path) -> None:

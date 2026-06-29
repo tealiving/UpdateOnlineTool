@@ -42,6 +42,59 @@ def test_settings_loads_nas_root(tmp_path: Path) -> None:
     assert settings.package_filename == "package.zip"
 
 
+def test_settings_loads_ordered_nas_roots(tmp_path: Path) -> None:
+    """验证 settings.json 可解析多个候选 NAS 根路径。"""
+    first = tmp_path / "missing"
+    second = tmp_path / "nas"
+    second.mkdir()
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"nas": {"roots": [str(first), str(second)]}}),
+        encoding="utf-8",
+    )
+
+    settings = UpdateToolSettings.load(settings_path)
+
+    assert settings.nas_root == first
+    assert settings.nas_roots == (first, second)
+    assert settings.selected_nas_root() == second
+
+
+def test_settings_keeps_primary_root_when_roots_are_configured(tmp_path: Path) -> None:
+    """验证发布主 NAS 不会被 roots[0] 覆盖。"""
+    primary = tmp_path / "primary"
+    first = tmp_path / "read-only"
+    second = tmp_path / "fallback"
+    first.mkdir()
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"nas": {"root": str(primary), "roots": [str(first), str(second)]}}),
+        encoding="utf-8",
+    )
+
+    settings = UpdateToolSettings.load(settings_path)
+
+    assert settings.nas_root == primary
+    assert settings.nas_roots == (first, second)
+    assert settings.selected_nas_root() == first
+
+
+def test_settings_skips_unreadable_nas_root(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    """验证不可读候选 NAS 会被跳过。"""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    settings = UpdateToolSettings(nas_root=first, nas_roots=(first, second))
+
+    def fake_access(path: Path, mode: int) -> bool:
+        return Path(path) != first
+
+    monkeypatch.setattr("update_online_tool.settings.os.access", fake_access)
+
+    assert settings.selected_nas_root() == second
+
+
 def test_resolve_settings_path_prefers_explicit_path(tmp_path: Path) -> None:
     """验证显式 settings 路径优先级最高。
 

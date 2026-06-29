@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from update_online_tool.downloader import CancellationToken, PreparedPackage, copy_package_with_verification
@@ -72,7 +72,7 @@ class UpdateService:
         :return: None
         """
         self.settings = settings
-        self.source = NasReleaseSource(settings.nas_root)
+        self.source = NasReleaseSource(settings.selected_nas_root())
 
     @classmethod
     def from_settings(cls, path: Path | None = None) -> "UpdateService":
@@ -123,6 +123,12 @@ class UpdateService:
                 min_supported_version=manifest.min_supported_version,
                 skipped_version=skipped_version,
             )
+            if (
+                decision is UpdateDecision.NOT_AVAILABLE
+                and manifest.allow_downgrade
+                and parse_version_tuple(current_version) > parse_version_tuple(manifest.version)
+            ):
+                decision = UpdateDecision.OPTIONAL_UPDATE
         return CheckUpdateResult(
             decision=decision,
             manifest=manifest,
@@ -220,7 +226,7 @@ class UpdateService:
         """
         self.source.ensure_available()
         source_package_path = self.source.resolve_package_path(manifest.package.url)
-        target_package_path = Path(download_dir) / Path(manifest.package.url).name
+        target_package_path = Path(download_dir) / _prepared_package_relative_path(manifest)
         return copy_package_with_verification(
             source_path=source_package_path,
             target_path=target_package_path,
@@ -342,3 +348,23 @@ class UpdateService:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest channel mismatch: {manifest.channel}")
         if platform and manifest.platform and manifest.platform != platform:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest platform mismatch: {manifest.platform}")
+
+
+def _prepared_package_relative_path(manifest: UpdateManifest) -> Path:
+    """生成按版本隔离的本地准备包路径。"""
+    filename = PurePosixPath(manifest.package.url.replace("\\", "/")).name
+    return (
+        Path(_safe_path_component(manifest.app_id, "app"))
+        / _safe_path_component(manifest.channel, "channel")
+        / _safe_path_component(manifest.platform, "any")
+        / _safe_path_component(manifest.version, "version")
+        / _safe_path_component(filename, "package.zip")
+    )
+
+
+def _safe_path_component(value: str, fallback: str) -> str:
+    """把 manifest 字段压成单个本地路径段。"""
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    return text.replace("/", "_").replace("\\", "_").replace("..", "_")

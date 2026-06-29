@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.locks import runtime_lock
 from update_online_tool.versioning import parse_version_tuple
 
 
@@ -73,12 +75,16 @@ def list_installed_versions(*, install_root: Path, entry_name: str = "") -> list
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"releases directory not found: {releases_root}")
     current_payload = _read_current_json(root, required=False)
     current_version = str(current_payload.get("version", "")).strip() if current_payload else ""
-    resolved_entry_name = _resolve_entry_name(entry_name, current_payload)
     versions: list[InstalledVersion] = []
     for release_dir in releases_root.iterdir():
         if not release_dir.is_dir():
             continue
         version = release_dir.name
+        resolved_entry_name = _resolve_release_entry_name(
+            entry_name=entry_name,
+            current_payload=current_payload,
+            release_dir=release_dir,
+        )
         entry_path = release_dir / resolved_entry_name
         versions.append(
             InstalledVersion(
@@ -179,6 +185,7 @@ def switch_installed_version(
     entry_name: str = "",
     app_id: str = "",
     platform: str = "",
+    use_lock: bool = True,
 ) -> InstalledVersion:
     """切换安装根 current.json 到已安装版本。
 
@@ -187,55 +194,62 @@ def switch_installed_version(
     :param entry_name: 可选入口名；为空时从 current.json 推断。
     :param app_id: 可选应用标识；为空时沿用 current.json。
     :param platform: 可选平台；为空时沿用 current.json entry.platform。
+    :param use_lock: 是否使用安装根 update.lock；runtime 已持锁时传 False。
     :return: 切换后的版本信息。
     """
     root = Path(install_root)
     target_version = str(version or "").strip()
     if not target_version:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "version must be non-empty")
-    current_payload = _read_current_json(root, required=True)
-    resolved_entry_name = _resolve_entry_name(entry_name, current_payload)
-    release_dir = root / "releases" / target_version
-    entry_path = release_dir / resolved_entry_name
-    if not release_dir.is_dir():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release directory not found: {release_dir}")
-    if not _is_entry_path(entry_path):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release entry not found: {entry_path}")
-    resolved_app_id = str(app_id or current_payload.get("app_id") or "").strip()
-    if not resolved_app_id:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "app_id must be provided or present in current.json")
-    resolved_platform = str(platform or _current_platform(current_payload)).strip()
-    previous_version = str(current_payload.get("version", "")).strip()
-    payload: dict[str, object] = dict(current_payload)
-    entry_payload = current_payload.get("entry")
-    entry = dict(entry_payload) if isinstance(entry_payload, dict) else {}
-    entry.update(
-        {
-            "kind": _entry_kind(resolved_entry_name),
-            "path": resolved_entry_name,
-            "platform": resolved_platform,
-        }
-    )
-    payload.update(
-        {
-            "app_id": resolved_app_id,
-            "version": target_version,
-            "release_dir": f"releases/{target_version}",
-            "executable": resolved_entry_name,
-            "entry": entry,
-        }
-    )
-    if previous_version and previous_version != target_version:
-        payload["previous_version"] = previous_version
-    _write_current_json_atomic(root / "current.json", payload)
-    return InstalledVersion(
-        version=target_version,
-        release_dir=release_dir,
-        entry_path=entry_path,
-        entry_exists=True,
-        entry_kind=_entry_kind(resolved_entry_name),
-        is_current=True,
-    )
+    lock = runtime_lock(root, action="switch_installed") if use_lock else nullcontext()
+    with lock:
+        current_payload = _read_current_json(root, required=True)
+        release_dir = root / "releases" / target_version
+        resolved_entry_name = _resolve_release_entry_name(
+            entry_name=entry_name,
+            current_payload=current_payload,
+            release_dir=release_dir,
+        )
+        entry_path = release_dir / resolved_entry_name
+        if not release_dir.is_dir():
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release directory not found: {release_dir}")
+        if not _is_entry_path(entry_path):
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release entry not found: {entry_path}")
+        resolved_app_id = str(app_id or current_payload.get("app_id") or "").strip()
+        if not resolved_app_id:
+            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "app_id must be provided or present in current.json")
+        resolved_platform = str(platform or _current_platform(current_payload)).strip()
+        previous_version = str(current_payload.get("version", "")).strip()
+        payload: dict[str, object] = dict(current_payload)
+        entry_payload = current_payload.get("entry")
+        entry = dict(entry_payload) if isinstance(entry_payload, dict) else {}
+        entry.update(
+            {
+                "kind": _entry_kind(resolved_entry_name),
+                "path": resolved_entry_name,
+                "platform": resolved_platform,
+            }
+        )
+        payload.update(
+            {
+                "app_id": resolved_app_id,
+                "version": target_version,
+                "release_dir": f"releases/{target_version}",
+                "executable": resolved_entry_name,
+                "entry": entry,
+            }
+        )
+        if previous_version and previous_version != target_version:
+            payload["previous_version"] = previous_version
+        _write_current_json_atomic(root / "current.json", payload)
+        return InstalledVersion(
+            version=target_version,
+            release_dir=release_dir,
+            entry_path=entry_path,
+            entry_exists=True,
+            entry_kind=_entry_kind(resolved_entry_name),
+            is_current=True,
+        )
 
 
 def _read_current_json(install_root: Path, *, required: bool) -> dict[str, Any]:
@@ -268,6 +282,24 @@ def _resolve_entry_name(entry_name: str, current_payload: dict[str, Any]) -> str
     if isinstance(executable, str) and executable.strip():
         return executable.strip()
     raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "entry_name is required when current.json has no entry")
+
+
+def _resolve_release_entry_name(*, entry_name: str, current_payload: dict[str, Any], release_dir: Path) -> str:
+    """按目标 release 解析入口名，兼容裸可执行文件与 .app 互切。"""
+    resolved = _resolve_entry_name(entry_name, current_payload)
+    if str(entry_name or "").strip() or _is_entry_path(Path(release_dir) / resolved):
+        return resolved
+    for candidate in _compatible_entry_names(resolved):
+        if _is_entry_path(Path(release_dir) / candidate):
+            return candidate
+    return resolved
+
+
+def _compatible_entry_names(entry_name: str) -> tuple[str, ...]:
+    """返回入口形态兼容候选。"""
+    if entry_name.endswith(".app"):
+        return (entry_name[:-4],)
+    return (f"{entry_name}.app",)
 
 
 def _current_platform(current_payload: dict[str, Any]) -> str:

@@ -16,6 +16,7 @@
 - `current_version`：当前源码版本。
 - `target_version`：发布目标版本。
 - `nas_root`：NAS 根目录或挂载路径。
+- `nas_roots`：可选，多个网络环境下按顺序尝试的 NAS 根目录列表。
 - `settings_file`：通常是 `config/settings.json`。
 - `endpoint_file`：通常是 `update-endpoint.json`。
 
@@ -130,6 +131,23 @@ uot publish `
 
 `--notes` 适合短说明，`--notes-file` 适合直接复用 changelog 文件。发布后的说明会写入 manifest 和 `versions.json`，GUI/SDK 读取历史版本说明时直接调用 `list-remote` 或 `show-version`。
 
+多 NAS 配置：
+
+```json
+{
+  "nas": {
+    "root": "/mnt/internal-nas/SmartIngest",
+    "roots": [
+      "/mnt/internal-nas/SmartIngest",
+      "/Volumes/SmartIngestNAS",
+      "\\\\nas-server\\SmartIngest"
+    ]
+  }
+}
+```
+
+`check`、`verify`、`list-remote`、`show-version`、`prepare-version` 等读取操作会按 `nas.roots` 顺序选择第一个可访问目录。`publish` 仍写入主 `nas.root`，不要依赖自动 fallback 发布；需要同步多个 NAS 时应切换 settings 或分别发布。
+
 校验：
 
 ```powershell
@@ -164,7 +182,7 @@ uot verify --settings <settings_file> --app <app_id> --signature-key config\uot-
 
 `keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会写入 manifest `signature`；`verify --signature-key`、`install-prepared --signature-key` 和 `apply-update --signature-key` 会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。
 
-`prepare-version` 只复制并校验指定版本包，不直接修改安装根或 `current.json`。如果使用 UOT 标准 runtime，可以继续执行：
+`prepare-version` 只复制并校验指定版本包到 `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/package.zip`，不直接修改安装根或 `current.json`。后续命令应使用 JSON 输出里的 `package_path`。如果使用 UOT 标准 runtime，可以继续执行：
 
 ```powershell
 uot install-prepared --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --dry-run
@@ -190,7 +208,7 @@ uot-updater rollback --install-root <install_root>
 uot-updater launch-current --install-root <install_root>
 ```
 
-`install-prepared` 和 `apply-update` 会校验包大小与 SHA-256，安全解压到 `releases/<target_version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 会创建 `update.lock` 防止并发更新；失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段是 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是 UI 阶段提示，不是下载字节进度。`--wait-pid` 等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT`；`--restart` 会切换后启动当前入口并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度要由 updater 窗口或外部轮询进程读取状态文件。自定义 updater 仍可只复用 `prepare-version` 和 SDK。
+`install-prepared` 和 `apply-update` 会校验包大小与 SHA-256，安全解压到 `releases/<target_version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 会创建 `update.lock` 防止并发更新；`switch-installed` 也使用同一把锁。失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段是 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是 UI 阶段提示，不是下载字节进度。`--wait-pid` 等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT`；`--restart` 会切换后启动当前入口并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度要由 updater 窗口或外部轮询进程读取状态文件。自定义 updater 仍可只复用 `prepare-version` 和 SDK。
 `uot publish` 会维护通道 `versions.json` 版本索引，并把包写入 `<app_id>/<channel>/v<target_version>/`。`list-remote` 优先读取索引，并补充扫描通道版本目录和旧版 `<app_id>/v<version>/` 历史目录。同一版本号可在不同 channel 远端存放不同包，但安装根仍使用 `releases/<target_version>`；同一客户端从测试包升级到正式包时应使用递增版本号，或显式 `install-prepared --force` 覆盖同版本 release。
 
 诊断包：
@@ -199,7 +217,7 @@ uot-updater launch-current --install-root <install_root>
 uot doctor --install-root <install_root> --output diagnostics\doctor.json --archive diagnostics\doctor.zip
 ```
 
-`doctor` 会收集安装根关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock`、已安装版本列表和日志摘要。诊断包不包含 `config/settings*.json` 或签名私钥。
+`doctor` 会收集安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock`、已安装版本列表和日志摘要。诊断包不包含 `config/settings*.json` 或签名私钥。
 
 旧安装根迁移：
 
@@ -219,7 +237,7 @@ uot list-installed --install-root <install_root>
 uot switch-installed --install-root <install_root> --version <target_version>
 ```
 
-`switch-installed` 只适用于 `releases/<target_version>/<app_exe>` 已存在的版本。它会原子更新安装根 `current.json` 并记录 `previous_version`，但不下载、不解压、不重启 GUI。
+`switch-installed` 只适用于 `releases/<target_version>/<app_exe>` 已存在的版本。它会在 `update.lock` 保护下原子更新安装根 `current.json` 并记录 `previous_version`，但不下载、不解压、不重启 GUI。
 
 打包边界：
 

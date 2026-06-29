@@ -127,6 +127,44 @@ def test_service_check_returns_optional_update(tmp_path: Path) -> None:
     assert result.manifest.version == "1.0.6"
 
 
+def test_service_uses_first_available_nas_root(tmp_path: Path) -> None:
+    """验证读取操作按配置顺序选择第一个可访问 NAS。"""
+    missing_root = tmp_path / "missing"
+    available_root = tmp_path / "available"
+    available_root.mkdir()
+    _write_manifest(available_root, version="1.0.6")
+    service = UpdateService(
+        UpdateToolSettings(
+            nas_root=missing_root,
+            nas_roots=(missing_root, available_root),
+        )
+    )
+
+    result = service.check(app_id="automation-manual-studio", current_version="1.0.5")
+
+    assert service.source.root == available_root
+    assert result.manifest.version == "1.0.6"
+
+
+def test_service_check_offers_allow_downgrade_latest(tmp_path: Path) -> None:
+    """验证 latest 允许降级时高版本客户端可看到回退版本。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None
+    """
+    _write_manifest(tmp_path, version="1.0.9", policy={"allow_downgrade": True})
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    result = service.check(
+        app_id="automation-manual-studio",
+        current_version="1.1.0",
+        channel="stable",
+    )
+
+    assert result.decision is UpdateDecision.OPTIONAL_UPDATE
+    assert result.manifest.version == "1.0.9"
+
+
 def test_service_check_uses_settings_default_channel_when_channel_is_empty(tmp_path: Path) -> None:
     """验证 SDK check 与 CLI 一样默认读取 settings.default_channel。
 
@@ -177,6 +215,31 @@ def test_service_prepare_copies_package(tmp_path: Path) -> None:
 
     assert prepared.verified is True
     assert prepared.package_path.read_bytes() == b"release"
+    assert prepared.package_path == (
+        tmp_path
+        / "downloads"
+        / "automation-manual-studio"
+        / "stable"
+        / "any"
+        / "1.0.6"
+        / "package.zip"
+    )
+
+
+def test_service_prepare_keeps_versions_in_separate_paths(tmp_path: Path) -> None:
+    """验证准备多个版本时不会互相覆盖 package.zip。"""
+    _write_manifest(tmp_path, version="1.0.4", content=b"old")
+    _write_manifest(tmp_path, version="1.0.6", content=b"new")
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    old_manifest = service.get_remote_manifest(app_id="automation-manual-studio", version="1.0.4")
+    new_manifest = service.get_remote_manifest(app_id="automation-manual-studio", version="1.0.6")
+    old_prepared = service.prepare(old_manifest, tmp_path / "downloads")
+    new_prepared = service.prepare(new_manifest, tmp_path / "downloads")
+
+    assert old_prepared.package_path != new_prepared.package_path
+    assert old_prepared.package_path.read_bytes() == b"old"
+    assert new_prepared.package_path.read_bytes() == b"new"
 
 
 def test_service_lists_remote_versions_sorted_by_version(tmp_path: Path) -> None:

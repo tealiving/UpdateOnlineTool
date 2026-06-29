@@ -139,6 +139,22 @@ macOS NAS 示例：
 }
 ```
 
+多网络 NAS 示例：
+
+```json
+{
+  "nas": {
+    "root": "/Volumes/internal-release/UpdateOnlineTool",
+    "roots": [
+      "/Volumes/internal-release/UpdateOnlineTool",
+      "/Volumes/external-release/UpdateOnlineTool"
+    ]
+  }
+}
+```
+
+`check`、`verify`、`list-remote`、`show-version`、`prepare-version` 等读取操作会按 `nas.roots` 顺序选择第一个可访问路径。`publish` 仍写入主 `nas.root`，需要同步多个 NAS 时应切换 settings 分别发布。
+
 本工具不保存 NAS 用户名或密码。Windows 使用凭据管理器或当前 SMB 会话；macOS 使用钥匙串或已挂载的 SMB 卷。
 
 本地 Windows 验证可以把普通目录当作 NAS 根目录：
@@ -347,14 +363,14 @@ uot show-version --settings config/settings.json --app my-tool --version 1.0.4 -
 uot prepare-version --settings config/settings.json --app my-tool --version 1.0.4 --platform macos --download-dir updates/
 ```
 
-`uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取索引，并补充扫描该通道 `v<version>` 与旧版全局 `v<version>` 历史目录后输出 JSON。`prepare-version` 会复制并校验目标版本的包，但不直接修改安装根或 `current.json`。
+`uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取索引，并补充扫描该通道 `v<version>` 与旧版全局 `v<version>` 历史目录后输出 JSON。`prepare-version` 会复制并校验目标版本的包到 `updates/<app>/<channel>/<platform-or-any>/<version>/package.zip`，但不直接修改安装根或 `current.json`。调用方应使用命令输出里的 `package_path`。
 
 已准备好的 zip 包可以交给标准 updater runtime 安装。runtime 会校验包大小和 SHA-256，安全解压到 `releases/<version>`，切换 `current.json`，并写入 `update-result.json`：
 
 ```bash
 uot install-prepared \
   --install-root /Applications/MyTool \
-  --package updates/package.zip \
+  --package updates/my-tool/stable/macos/1.0.4/package.zip \
   --manifest updates/latest.json
 
 uot apply-update --pending /Applications/MyTool/pending-update.json
@@ -410,7 +426,7 @@ uot list-installed --install-root /Applications/MyTool
 uot switch-installed --install-root /Applications/MyTool --version 1.0.4
 ```
 
-`switch-installed` 会校验 `releases/<version>/<entry>` 存在，并原子更新安装根 `current.json`，同时记录 `previous_version` 供 `rollback` 使用。它不下载包、不解压包，也不重启 GUI；接入方可在切换后自行重启或让 launcher 下次启动时进入目标版本。
+`switch-installed` 会校验 `releases/<version>/<entry>` 存在，并在安装根 `update.lock` 保护下原子更新 `current.json`，同时记录 `previous_version` 供 `rollback` 使用。它不下载包、不解压包，也不重启 GUI；接入方可在切换后自行重启或让 launcher 下次启动时进入目标版本。
 
 现场排障可收集诊断报告和诊断包：
 
@@ -421,7 +437,7 @@ uot doctor \
   --archive diagnostics/doctor.zip
 ```
 
-诊断报告包含安装根关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。诊断 zip 只包含报告、运行态 JSON、锁文件和日志，不包含 `config/settings*.json` 或签名私钥。
+诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。NAS 根路径可以是 UNC 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符或反斜杠路径。诊断 zip 只包含报告、运行态 JSON、锁文件和日志，不包含 `config/settings*.json` 或签名私钥。
 
 企业级执行链路：
 

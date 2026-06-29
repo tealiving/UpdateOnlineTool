@@ -5,9 +5,11 @@
 检查：
 
 - `config/settings.json` 中的 NAS 根路径是否正确。
+- 如果配置了 `nas.roots`，确认至少一个候选路径在当前网络下可访问；UOT 会按顺序使用第一个可访问路径。
 - 当前系统用户是否能在文件管理器或 shell 中读取该路径。
 - 当前系统用户是否能写入、读取并删除临时文件。
 - Windows 使用 UNC 路径或已登录 SMB 会话；macOS 通常使用 `/Volumes/...` 挂载卷。
+- UNC 或挂载路径只应出现在 `nas.root`/`nas.roots` settings；manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符或反斜杠路径。
 - 如果是真实 SMB 路径，确认当前用户已有 SMB 会话、凭据管理器凭证或钥匙串凭证。
 
 UOT 不应保存 NAS 用户名和密码。Windows 使用系统凭证或当前 SMB 会话；macOS 使用已挂载卷或钥匙串。
@@ -87,6 +89,22 @@ config/settings.json
 ```
 
 安装后的用户级覆盖可以使用项目约定的用户配置路径。不要修改 UOT 依赖包源码。
+
+如果内网和外网 NAS 都可能使用，优先在 settings 中配置：
+
+```json
+{
+  "nas": {
+    "root": "/mnt/internal-nas/SmartIngest",
+    "roots": [
+      "/mnt/internal-nas/SmartIngest",
+      "/Volumes/SmartIngestNAS"
+    ]
+  }
+}
+```
+
+读取操作会自动选择第一个可访问路径；发布操作仍写主 `nas.root`，避免误把正式包发布到临时 fallback 路径。
 
 ## 不应放回 PyQt 项目的通用代码
 

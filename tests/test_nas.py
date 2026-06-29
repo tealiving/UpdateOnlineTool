@@ -100,3 +100,23 @@ def test_nas_rejects_parent_relative_package_url(tmp_path: Path) -> None:
         source.resolve_package_path("../secret.zip")
 
     assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
+def test_nas_rejects_windows_or_unc_package_url(tmp_path: Path) -> None:
+    """验证 package.url 不能写成 Windows/UNC 路径。"""
+    source = NasReleaseSource(tmp_path)
+
+    with pytest.raises(UpdateError) as error:
+        source.resolve_package_path(r"\\server\share\package.zip")
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
+def test_nas_rejects_drive_letter_package_url(tmp_path: Path) -> None:
+    """验证 package.url 不能写成盘符绝对路径。"""
+    source = NasReleaseSource(tmp_path)
+
+    with pytest.raises(UpdateError) as error:
+        source.resolve_package_path("C:/packages/package.zip")
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
