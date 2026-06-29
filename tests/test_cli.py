@@ -976,6 +976,33 @@ def test_cli_init_with_nas_root_writes_project_settings(tmp_path: Path, monkeypa
     assert "NAS check ok" in captured.out
 
 
+def test_cli_init_normalizes_file_uri_nas_root(tmp_path: Path, monkeypatch) -> None:
+    """验证 init 写入 settings 前会规范化 file URI NAS 路径。"""
+    output = tmp_path / "project" / "update-endpoint.json"
+    project_root = output.parent
+    project_root.mkdir()
+    monkeypatch.chdir(project_root)
+
+    exit_code = main(
+        [
+            "init",
+            "--app",
+            "my-tool",
+            "--output",
+            str(output),
+            "--nas-root",
+            "file://sjnas01/as/JSGCB/%E6%8A%80%E6%9C%AF%E5%B7%A5%E7%A8%8B%E9%83%A8",
+            "--skip-nas-check",
+        ]
+    )
+
+    settings_payload = json.loads((project_root / "config" / "settings.json").read_text(encoding="utf-8"))
+    normalized = settings_payload["nas"]["root"].replace("\\", "/")
+    assert exit_code == 0
+    assert normalized.startswith("//sjnas01/as/JSGCB/技术工程部")
+    assert "file:" not in normalized
+
+
 def test_cli_init_can_write_user_settings_when_requested(tmp_path: Path, monkeypatch) -> None:
     """验证 init 可按需写入用户级 NAS settings。
 

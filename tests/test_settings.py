@@ -8,6 +8,7 @@ from pathlib import Path
 from update_online_tool.settings import (
     UPDATE_SETTINGS_FILE_ENV,
     UpdateToolSettings,
+    normalize_nas_root,
     resolve_settings_path,
     user_settings_path,
 )
@@ -58,6 +59,29 @@ def test_settings_loads_ordered_nas_roots(tmp_path: Path) -> None:
     assert settings.nas_root == first
     assert settings.nas_roots == (first, second)
     assert settings.selected_nas_root() == second
+
+
+def test_settings_normalizes_file_uri_nas_root_with_chinese_text() -> None:
+    """验证 file URI NAS 根路径会解码为文件系统路径。"""
+    root = normalize_nas_root(
+        "file://sjnas01/as/JSGCB/%E6%8A%80%E6%9C%AF%E5%B7%A5%E7%A8%8B%E9%83%A8/"
+        "%E6%95%B0%E6%8D%AE%E4%BC%A0%E8%BE%93%E5%85%B1%E4%BA%AB"
+    )
+    normalized = str(root).replace("\\", "/")
+
+    assert normalized.startswith("//sjnas01/as/JSGCB/技术工程部")
+    assert "数据传输共享" in normalized
+    assert "file:" not in normalized
+
+
+def test_settings_preserves_plain_unc_nas_root_with_chinese_text() -> None:
+    """验证普通 UNC 中文路径不经过 URL 编码。"""
+    raw = r"\\sjnas01\as\JSGCB\技术工程部\数据传输共享"
+
+    root = normalize_nas_root(raw)
+
+    assert "技术工程部" in str(root)
+    assert "数据传输共享" in str(root)
 
 
 def test_settings_keeps_primary_root_when_roots_are_configured(tmp_path: Path) -> None:

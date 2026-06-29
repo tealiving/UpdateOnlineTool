@@ -9,7 +9,8 @@
 - 当前系统用户是否能在文件管理器或 shell 中读取该路径。
 - 当前系统用户是否能写入、读取并删除临时文件。
 - Windows 使用 UNC 路径或已登录 SMB 会话；macOS 通常使用 `/Volumes/...` 挂载卷。
-- UNC 或挂载路径只应出现在 `nas.root`/`nas.roots` settings；manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符或反斜杠路径。
+- `nas.root`/`nas.roots` 支持普通 UNC、中文、空格和 `file://` URI；JSON 中 UNC 反斜杠必须写成 `\\`。
+- UNC、`file://` 或挂载路径只应出现在 `nas.root`/`nas.roots` settings；manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符、`file://` 或反斜杠路径。
 - 如果是真实 SMB 路径，确认当前用户已有 SMB 会话、凭据管理器凭证或钥匙串凭证。
 
 UOT 不应保存 NAS 用户名和密码。Windows 使用系统凭证或当前 SMB 会话；macOS 使用已挂载卷或钥匙串。

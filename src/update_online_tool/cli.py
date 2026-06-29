@@ -30,7 +30,7 @@ from update_online_tool.runtime import (
     rollback_installation,
 )
 from update_online_tool.service import UpdateService
-from update_online_tool.settings import UpdateToolSettings, user_settings_path
+from update_online_tool.settings import UpdateToolSettings, normalize_nas_root, user_settings_path
 from update_online_tool.signature import (
     derive_ed25519_public_key_pem,
     generate_ed25519_private_key_pem,
@@ -125,7 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--package-url-prefix", default="uot-nas://nas", help="Package URL prefix.")
     init.add_argument("--auth-provider", default="update_online_tool", help="Auth provider.")
     init.add_argument("--priority", default=10, type=int, help="Manifest source priority.")
-    init.add_argument("--nas-root", default=None, type=Path, help="Optional NAS root. Writes project settings when set.")
+    init.add_argument("--nas-root", default=None, help="Optional NAS root. Writes project settings when set.")
     init.add_argument("--settings-output", default=None, type=Path, help="Optional settings output path.")
     init.add_argument("--user-settings", action="store_true", help="Write settings to the OS user config directory.")
     init.add_argument("--updater-name", default="Updater.exe", help="Standalone updater executable name.")
@@ -377,9 +377,10 @@ def _check_init_nas_root(args: argparse.Namespace) -> list[str]:
     """
     if args.nas_root is None:
         return []
+    nas_root = normalize_nas_root(args.nas_root)
     if bool(args.skip_nas_check):
-        return [f"NAS check skipped: root={Path(args.nas_root)}"]
-    return _probe_nas_root(Path(args.nas_root))
+        return [f"NAS check skipped: root={nas_root}"]
+    return _probe_nas_root(nas_root)
 
 
 def _probe_nas_root(nas_root: Path) -> list[str]:
@@ -451,7 +452,7 @@ def _build_init_settings_payload(args: argparse.Namespace) -> dict[str, object]:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "--nas-root is required when writing settings")
     return {
         "nas": {
-            "root": str(Path(args.nas_root)),
+            "root": str(normalize_nas_root(args.nas_root)),
         },
         "publish": {
             "default_channel": str(args.channel or "stable").strip(),

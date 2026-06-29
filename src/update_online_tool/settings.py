@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from collections.abc import Sequence
+from urllib.parse import unquote, urlparse
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 
@@ -77,7 +78,7 @@ class UpdateToolSettings:
         nas_roots = _nas_roots(nas_payload)
         nas_root_text = nas_payload.get("root")
         if isinstance(nas_root_text, str) and nas_root_text.strip():
-            nas_root = Path(nas_root_text.strip())
+            nas_root = normalize_nas_root(nas_root_text)
         else:
             nas_root = nas_roots[0]
         publish_payload = payload.get("publish")
@@ -112,22 +113,50 @@ class UpdateToolSettings:
 
 
 def _is_readable_directory(path: Path) -> bool:
+    """判断路径是否是可读目录。
+
+    :param path: 待检测路径。
+    :return: 可读目录返回 True。
+    """
     try:
         return path.is_dir() and os.access(path, os.R_OK)
     except OSError:
         return False
 
 
+def normalize_nas_root(value: str | Path) -> Path:
+    """规范化 NAS 根路径，支持普通路径、UNC 和 file URI。
+
+    :param value: NAS 根路径文本或 Path。
+    :return: 规范化后的文件系统路径。
+    """
+    text = str(value).strip()
+    parsed = urlparse(text)
+    if parsed.scheme.lower() != "file":
+        return Path(text)
+    path = unquote(parsed.path)
+    if parsed.netloc:
+        return Path(f"//{parsed.netloc}{path}")
+    if len(path) >= 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return Path(path)
+
+
 def _nas_roots(payload: dict[str, Any]) -> tuple[Path, ...]:
+    """解析 NAS 候选根路径。
+
+    :param payload: nas 配置字典。
+    :return: NAS 根路径元组。
+    """
     roots_value = payload.get("roots")
     if roots_value is not None:
         if not isinstance(roots_value, list):
             raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "roots must be a list")
-        roots = tuple(Path(item.strip()) for item in roots_value if isinstance(item, str) and item.strip())
+        roots = tuple(normalize_nas_root(item) for item in roots_value if isinstance(item, str) and item.strip())
         if roots:
             return roots
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "roots must contain at least one non-empty string")
-    return (Path(_require_text(payload, "root")),)
+    return (normalize_nas_root(_require_text(payload, "root")),)
 
 
 def _require_text(payload: dict[str, Any], key: str) -> str:

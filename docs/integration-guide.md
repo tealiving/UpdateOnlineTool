@@ -133,10 +133,12 @@ uot init --app my-tool --output update-endpoint.json --nas-root D:\Nas --setting
 ```json
 {
   "nas": {
-    "root": "\\\\nas-server\\release-share\\UpdateOnlineTool"
+    "root": "\\\\sjnas01\\as\\JSGCB\\技术工程部\\数据传输共享\\技术工程部提效工具集合"
   }
 }
 ```
+
+`nas.root` 和 `nas.roots` 支持普通 UNC、中文和空格。JSON 中反斜杠必须转义为 `\\`；如果 GUI 文件选择器传入 `file://sjnas01/as/.../%E4%B8%AD` 形式，UOT 会先解码为文件系统路径再使用。
 
 多网络 NAS 示例：
 
@@ -327,7 +329,7 @@ uot install-prepared --install-root D:\Tools\MyTool --package updates\package.zi
 uot doctor --install-root D:\Tools\MyTool --output diagnostics\doctor.json --archive diagnostics\doctor.zip
 ```
 
-诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。NAS 根路径可以是 UNC 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符或反斜杠路径。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
+诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。NAS 根路径可以是 UNC、`file://` 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符、`file://` 或反斜杠路径。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
 
 旧版平铺安装根可迁移到新架构：
 

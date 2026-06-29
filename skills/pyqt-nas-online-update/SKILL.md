@@ -84,7 +84,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Confirm `update-status.json.phase` is `success`; on failure, the GUI should read `phase`, `message`, `version`, and `previous_version` on next launch. Live progress after the old GUI exits requires an updater-owned window or polling process.
    - Confirm no stale `update.lock` remains after a successful or failed runtime update.
    - Use `uot doctor --install-root <install_root> --archive <doctor.zip>` to collect a support bundle when an update fails.
-   - For UNC paths, keep the UNC or mounted path only in `nas.root`/`nas.roots` settings. Manifest `package.url` must be a forward-slash relative path, never a UNC path, drive-letter path, or backslash path.
+   - For UNC, `file://`, or mounted paths, keep them only in `nas.root`/`nas.roots` settings. Manifest `package.url` must be a forward-slash relative path, never a UNC path, drive-letter path, `file://` URI, or backslash path.
    - Inspect updater and launcher logs if the GUI does not restart or the version does not switch.
 
 ## References
