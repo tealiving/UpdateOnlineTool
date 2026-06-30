@@ -11,6 +11,42 @@ Use this skill to help a PyQt desktop project use UpdateOnlineTool (UOT) for NAS
 
 Keep the workflow project-agnostic. Do not hardcode one repository's app id, product name, NAS path, version, spec file, virtual environment, or executable name unless the user explicitly provides them.
 
+Read the UOT repository documentation when available:
+
+- `docs/technical-architecture.md` for principles, component boundaries, data contracts, and flowcharts.
+- `docs/integration-guide.md` for project integration commands.
+- `docs/enterprise-update-architecture.md` for remaining enterprise gaps and risk classification.
+
+## Boundary Contract
+
+UOT owns the complete update runtime:
+
+- NAS settings parsing, `nas.root` / `nas.roots`, UNC and `file://` normalization.
+- NAS release layout, `latest.json`, `versions.json`, manifest URLs, package URLs.
+- Manifest schema, version policy fields, signing and signature verification.
+- Publish, verify, check, list, show, prepare, install, apply, switch, rollback, doctor.
+- Package copy, size/SHA-256 validation, cancellation and progress callback.
+- Standard `DesktopUpdateClient` facade.
+- `pending-update.json`, updater path resolution, updater command construction.
+- `current.json`, `releases/<version>`, `update.lock`, `update-status.json`, `update-result.json`.
+- Process wait/restart and standard `uot-updater` behavior.
+- PyInstaller install/update directory assembly and updater sidecar layout.
+
+Tool projects own only:
+
+- App-specific `app_id`, `platform`, `channel`, `install_root`, settings path and endpoint path.
+- GUI prompt text, confirmation dialogs, progress widgets, worker/thread scheduling.
+- Calling `DesktopUpdateClient` or UOT CLI and displaying returned data.
+- Packaging the app project itself, while delegating UOT-standard assembly/publish/update semantics to UOT.
+
+Tool projects must not:
+
+- Parse or modify `current.json`.
+- Construct version `latest.json` paths or read NAS version directories directly.
+- Resolve updater executable paths or build updater command arguments.
+- Copy root updater, `_launcher`, or `updater` sidecars manually.
+- Reimplement manifest generation, package hash checks, download/copy logic, rollback, or local version switching.
+
 ## Workflow
 
 1. Establish variables:
@@ -94,6 +130,29 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Use `uot doctor --install-root <install_root> --archive <doctor.zip>` to collect a support bundle when an update fails.
    - For UNC, `file://`, or mounted paths, keep them only in `nas.root`/`nas.roots` settings. Manifest `package.url` must be a forward-slash relative path, never a UNC path, drive-letter path, `file://` URI, or backslash path.
    - Inspect updater and launcher logs if the GUI does not restart or the version does not switch.
+
+## Execution Flow
+
+Use this order when implementing or validating a project integration:
+
+1. Initialize config with `uot init --app <app_id> --nas-root <nas_root>`.
+2. Build GUI and launcher with the app project's build system.
+3. Generate or build `uot-updater` via `uot write-updater-spec` when the app needs a packaged updater exe.
+4. Assemble install/update directories via `uot assemble-pyinstaller`.
+5. Zip the update directory contents.
+6. Publish with `uot publish --sign-key ...` when signing is enabled.
+7. Verify with `uot verify --signature-key ...`.
+8. In GUI, use `DesktopUpdateClient.check()` and `list_remote_versions()`.
+9. Install remote selected versions with `DesktopUpdateClient.install_remote_version()`.
+10. Switch local installed versions with `DesktopUpdateClient.switch_installed_version()`.
+11. Roll back with `DesktopUpdateClient.rollback()`.
+12. Read `read_status()` and `read_result()` on startup or after updater exit.
+
+If a task asks for architecture analysis, include the distinction between:
+
+- Remote install: NAS manifest/package -> prepare -> pending -> updater apply -> install and switch.
+- Local switch: existing `releases/<version>` -> updater switch-installed -> `current.json` switch.
+- Rollback: `current.json.previous_version` -> updater rollback -> `current.json` switch.
 
 ## References
 

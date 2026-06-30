@@ -634,7 +634,7 @@ if result.decision is not UpdateDecision.NO_UPDATE:
 
 GUI 项目负责界面、QThread 包装、进度展示和用户提示。`update_online_tool` 负责 manifest 解析、版本决策、NAS 包复制、校验、pending manifest 写入、标准 updater 启动、安装、切换、回滚和重启。低层 `UpdateService` 仍可用于发布脚本、测试脚本和旧项目兼容。
 
-完整工具项目对接流程见 [docs/integration-guide.md](docs/integration-guide.md)。版本更新、版本切换和企业级差距评审见 [docs/enterprise-update-architecture.md](docs/enterprise-update-architecture.md)。PyQt worker 和 pending manifest 细节见 [docs/pyqt-integration.md](docs/pyqt-integration.md)。
+完整技术原理和流程图见 [docs/technical-architecture.md](docs/technical-architecture.md)。工具项目对接流程见 [docs/integration-guide.md](docs/integration-guide.md)。版本更新、版本切换和企业级差距评审见 [docs/enterprise-update-architecture.md](docs/enterprise-update-architecture.md)。PyQt worker 和 pending manifest 细节见 [docs/pyqt-integration.md](docs/pyqt-integration.md)。
 
 ## PyQt 运行时契约
 

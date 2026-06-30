@@ -2,6 +2,8 @@
 
 本文档说明其他工具项目如何安装 `update-online-tool`，并把它作为共享在线升级后端使用。
 
+完整技术原理、模块职责、数据契约和流程图见 [technical-architecture.md](technical-architecture.md)。
+
 ## 1. 本包提供什么能力
 
 `update-online-tool` 提供后端在线升级能力：

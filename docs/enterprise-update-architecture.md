@@ -14,13 +14,13 @@ UOT 应拥有完整在线更新能力：NAS 配置解析、发布目录约定、
 
 工具仓库不应解析 `current.json`、拼 updater 命令、寻找 updater exe、构造版本 `latest.json` 路径、修改 `releases/` 或处理 sidecar。
 
-## 执行链路
-
 ## 发布模型
 
 UOT 当前采用单机 CLI 发布模型：发布人员在发布机上运行 `uot publish`，直接把包、manifest、`latest.json` 和 `versions.json` 写入 NAS 发布根。当前没有发布服务、服务端部署、后台 worker、队列或中心化控制面。
 
 `publish.lock` 是 NAS 文件锁，用于防止同一发布根下重复执行 `uot publish` 时互相覆盖；它不是分布式发布系统，也不承担服务调度职责。若单机发布进程异常退出后留下 `publish.lock`，发布人员确认没有正在运行的 `uot publish` 后可以人工删除该锁文件再重试。
+
+## 执行链路
 
 ### 1. 配置解析
 
