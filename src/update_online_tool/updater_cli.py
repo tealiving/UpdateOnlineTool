@@ -14,6 +14,7 @@ from update_online_tool.runtime import (
     install_prepared_package,
     launch_current,
     rollback_installation,
+    switch_installed_release,
 )
 from update_online_tool.signature import verify_manifest_signature_with_key_file
 
@@ -29,6 +30,8 @@ def main(argv: list[str] | None = None) -> int:
             return _apply(args)
         if args.command == "rollback":
             return _rollback(args)
+        if args.command == "switch-installed":
+            return _switch_installed(args)
         if args.command == "launch-current":
             return _launch_current(args)
     except UpdateError as exc:
@@ -68,6 +71,16 @@ def _build_parser() -> argparse.ArgumentParser:
     rollback = subparsers.add_parser("rollback", help="Rollback current.json to previous_version.")
     rollback.add_argument("--install-root", required=True, type=Path, help="Install root.")
     rollback.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+
+    switch_installed = subparsers.add_parser("switch-installed", help="Switch current.json to an installed release.")
+    switch_installed.add_argument("--install-root", required=True, type=Path, help="Install root.")
+    switch_installed.add_argument("--version", required=True, help="Installed release version.")
+    switch_installed.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+    switch_installed.add_argument("--app", default="", help="Application id. Defaults to current.json app_id.")
+    switch_installed.add_argument("--platform", default="", help="Platform. Defaults to current.json entry.platform.")
+    switch_installed.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before switch.")
+    switch_installed.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
+    switch_installed.add_argument("--restart", action="store_true", help="Restart the current release after switch.")
 
     launch = subparsers.add_parser("launch-current", help="Launch the current release entry.")
     launch.add_argument("--install-root", required=True, type=Path, help="Install root.")
@@ -118,6 +131,22 @@ def _apply(args: argparse.Namespace) -> int:
 def _rollback(args: argparse.Namespace) -> int:
     """回滚安装根。"""
     result = rollback_installation(install_root=Path(args.install_root), entry_name=args.entry_name)
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _switch_installed(args: argparse.Namespace) -> int:
+    """切换已安装版本。"""
+    result = switch_installed_release(
+        install_root=Path(args.install_root),
+        version=args.version,
+        entry_name=args.entry_name,
+        app_id=args.app,
+        platform=args.platform,
+        wait_pid=args.wait_pid,
+        wait_timeout=float(args.wait_timeout),
+        restart=bool(args.restart),
+    )
     print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
     return 0
 

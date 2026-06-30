@@ -911,7 +911,7 @@ def test_cli_init_writes_project_update_endpoint(tmp_path: Path) -> None:
     assert exit_code == 0
     assert payload == {
         "channel": "stable",
-        "installer_mode": "custom_updater",
+        "installer_mode": "uot_updater",
         "manifest_sources": [
             {
                 "name": "local-nas",

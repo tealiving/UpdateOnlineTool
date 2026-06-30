@@ -46,7 +46,7 @@ def test_launcher_writes_pending_manifest_and_starts_process(tmp_path: Path) -> 
     assert result.started is True
     assert result.updater_pid == 123
     assert json.loads((tmp_path / "pending-update.json").read_text(encoding="utf-8"))["package_path"] == "package.zip"
-    assert calls == [[str(updater), "--pending", str(tmp_path / "pending-update.json")]]
+    assert calls == [[str(updater), "apply", "--pending", str(tmp_path / "pending-update.json"), "--restart"]]
 
 
 def test_launcher_rejects_missing_updater(tmp_path: Path) -> None:

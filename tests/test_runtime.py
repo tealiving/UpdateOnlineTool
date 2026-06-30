@@ -15,7 +15,12 @@ import pytest
 import update_online_tool.runtime as runtime
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.manifest import UpdateManifest
-from update_online_tool.runtime import apply_pending_update, install_prepared_package, rollback_installation
+from update_online_tool.runtime import (
+    apply_pending_update,
+    install_prepared_package,
+    rollback_installation,
+    switch_installed_release,
+)
 
 
 def test_install_prepared_package_installs_switches_and_writes_result(tmp_path: Path) -> None:
@@ -42,6 +47,10 @@ def test_install_prepared_package_installs_switches_and_writes_result(tmp_path: 
     assert status_payload["phase"] == "success"
     assert status_payload["percent"] == 100
     assert status_payload["version"] == "1.1.0"
+    assert "started_at" in status_payload
+    assert "total_elapsed_ms" in status_payload
+    assert "elapsed_ms" in result_payload
+    assert "phase_durations_ms" in result_payload
 
 
 def test_apply_pending_update_reads_pending_manifest(tmp_path: Path) -> None:
@@ -81,6 +90,39 @@ def test_rollback_installation_switches_to_previous_version(tmp_path: Path) -> N
     assert result.version == "1.0.0"
     assert current_payload["version"] == "1.0.0"
     assert current_payload["previous_version"] == "1.1.0"
+
+
+def test_switch_installed_release_can_restart_current_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 runtime 本地版本切换可等待后重启并写状态。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    _write_release_entry(install_root, "1.1.0", "MyTool.exe", "new")
+
+    class FakeProcess:
+        pid = 4242
+
+    monkeypatch.setattr(runtime, "wait_for_process_exit", lambda *, pid, timeout_seconds: None)
+    monkeypatch.setattr(runtime, "launch_current", lambda *, install_root: FakeProcess())
+
+    result = switch_installed_release(
+        install_root=install_root,
+        version="1.1.0",
+        wait_pid=os.getpid(),
+        restart=True,
+    )
+
+    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    status_payload = json.loads((install_root / "update-status.json").read_text(encoding="utf-8"))
+    result_payload = json.loads((install_root / "update-result.json").read_text(encoding="utf-8"))
+    assert result.action == "switch_installed"
+    assert result.message == "switched and restarted"
+    assert result.restarted_pid == 4242
+    assert current_payload["version"] == "1.1.0"
+    assert current_payload["previous_version"] == "1.0.0"
+    assert status_payload["phase"] == "success"
+    assert result_payload["phase_durations_ms"]["restarting"] >= 0
 
 
 def test_install_prepared_package_rejects_unsafe_zip_member(tmp_path: Path) -> None:
@@ -167,6 +209,29 @@ def test_install_prepared_package_accepts_macos_app_with_different_inner_executa
     assert result.success is True
     install_prepared_package(install_root=install_root, package_path=package_path, manifest=manifest)
     assert (install_root / "releases" / "1.1.0" / "MyTool.app" / "Contents" / "MacOS" / "MyTool-v1.1.0").is_file()
+
+
+def test_install_prepared_package_promotes_launcher_and_updater_sidecars(tmp_path: Path) -> None:
+    """验证 update 包中的 launcher/updater sidecar 会提升到安装根。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    package_path = _write_package(
+        tmp_path / "package.zip",
+        {
+            "MyTool.exe": "new",
+            "_launcher/MyTool.exe": "launcher",
+            "updater/MyToolUpdater.exe": "updater",
+        },
+    )
+    manifest = _manifest(package_path, version="1.1.0")
+
+    install_prepared_package(install_root=install_root, package_path=package_path, manifest=manifest)
+
+    release_root = install_root / "releases" / "1.1.0"
+    assert (release_root / "MyTool.exe").read_text(encoding="utf-8") == "new"
+    assert not (release_root / "_launcher").exists()
+    assert not (release_root / "updater").exists()
+    assert (install_root / "MyTool.exe").read_text(encoding="utf-8") == "launcher"
+    assert (install_root / "updater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
 
 
 def test_install_prepared_package_dry_run_does_not_write_install_state(tmp_path: Path) -> None:
@@ -437,6 +502,13 @@ def _write_install_root_with_app_bundle(
     current_payload["release_dir"] = f"releases/{current_version}"
     (install_root / "current.json").write_text(json.dumps(current_payload), encoding="utf-8")
     return install_root
+
+
+def _write_release_entry(install_root: Path, version: str, entry_name: str, content: str) -> None:
+    """写入一个已安装 release 入口。"""
+    release_dir = install_root / "releases" / version
+    release_dir.mkdir(parents=True, exist_ok=True)
+    (release_dir / entry_name).write_text(content, encoding="utf-8")
 
 
 def _write_package(path: Path, files: dict[str, str]) -> Path:

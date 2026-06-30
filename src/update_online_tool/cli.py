@@ -28,6 +28,7 @@ from update_online_tool.runtime import (
     install_prepared_package,
     launch_current,
     rollback_installation,
+    switch_installed_release,
 )
 from update_online_tool.service import UpdateService
 from update_online_tool.settings import UpdateToolSettings, normalize_nas_root, user_settings_path
@@ -121,7 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--channel", default="stable", help="Release channel.")
     init.add_argument("--output", default="update-endpoint.json", type=Path, help="Output endpoint JSON path.")
     init.add_argument("--source-name", default="local-nas", help="Manifest source name.")
-    init.add_argument("--installer-mode", default="custom_updater", help="Installer mode.")
+    init.add_argument("--installer-mode", default="uot_updater", help="Installer mode.")
     init.add_argument("--package-url-prefix", default="uot-nas://nas", help="Package URL prefix.")
     init.add_argument("--auth-provider", default="update_online_tool", help="Auth provider.")
     init.add_argument("--priority", default=10, type=int, help="Manifest source priority.")
@@ -199,6 +200,9 @@ def _build_parser() -> argparse.ArgumentParser:
     switch_installed.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
     switch_installed.add_argument("--app", default="", help="Application id. Defaults to current.json app_id.")
     switch_installed.add_argument("--platform", default="", help="Platform. Defaults to current.json entry.platform.")
+    switch_installed.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before switch.")
+    switch_installed.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
+    switch_installed.add_argument("--restart", action="store_true", help="Restart the current release after switch.")
 
     migrate_install = subparsers.add_parser("migrate-install-root", help="Migrate a flat install root to releases/current.json.")
     migrate_install.add_argument("--install-root", required=True, type=Path, help="Legacy install root.")
@@ -334,7 +338,7 @@ def _init(args: argparse.Namespace) -> int:
     channel = str(args.channel or "stable").strip()
     payload = {
         "channel": channel,
-        "installer_mode": str(args.installer_mode or "custom_updater").strip(),
+        "installer_mode": str(args.installer_mode or "uot_updater").strip(),
         "manifest_sources": [
             {
                 "name": str(args.source_name or "local-nas").strip(),
@@ -728,21 +732,17 @@ def _list_installed(args: argparse.Namespace) -> int:
 def _switch_installed(args: argparse.Namespace) -> int:
     """切换安装根 current.json。"""
     platform = _normalize_optional_platform(args.platform)
-    switched = switch_installed_version(
+    result = switch_installed_release(
         install_root=Path(args.install_root),
         version=args.version,
         entry_name=args.entry_name,
         app_id=args.app,
         platform=platform,
+        wait_pid=args.wait_pid,
+        wait_timeout=float(args.wait_timeout),
+        restart=bool(args.restart),
     )
-    payload = {
-        "version": switched.version,
-        "release_dir": str(switched.release_dir),
-        "entry_path": str(switched.entry_path),
-        "entry_kind": switched.entry_kind,
-        "is_current": switched.is_current,
-    }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
     return 0
 
 

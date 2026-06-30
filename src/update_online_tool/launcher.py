@@ -62,9 +62,13 @@ class StandaloneUpdaterLauncher:
             json.dumps(pending_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        command = [str(self.updater_executable), "apply", "--pending", str(pending_manifest_path), "--restart"]
+        old_pid = _coerce_positive_int(pending_payload.get("old_pid"))
+        if old_pid is not None:
+            command.extend(["--wait-pid", str(old_pid)])
         try:
             process = self._popen(
-                [str(self.updater_executable), "--pending", str(pending_manifest_path)],
+                command,
                 cwd=str(self.updater_executable.parent),
                 close_fds=True,
             )
@@ -78,3 +82,12 @@ class StandaloneUpdaterLauncher:
             updater_pid=getattr(process, "pid", None),
             pending_manifest_path=pending_manifest_path,
         )
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    """解析正整数 PID。"""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

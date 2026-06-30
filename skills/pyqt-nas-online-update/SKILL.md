@@ -69,14 +69,16 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Treat same-version cross-channel packages as remote storage isolation only. Local installs still use `releases/<version>` and version comparison still keys on the version number; use increasing versions for a client moving from test to stable, or explicitly use `install-prepared --force` to replace a same-version local release.
    - Prefer packaging `uot-updater` as the final application updater executable; use `uot write-updater-spec` to generate its PyInstaller spec, then pass the built artifact to `uot assemble-pyinstaller --updater-bundle <path>`. Keep full `uot` for developer, CI, and release-operator workflows.
    - Use `uot install-prepared --signature-key <key> --dry-run` before applying a package in automation; runtime uses `update.lock` to reject concurrent updates, writes `update-result.json` for successful and failed installs, and refreshes `update-status.json` with phase-level UI status.
-   - Use `--wait-pid <old_gui_pid> --wait-timeout <seconds> --restart` when the standard runtime should wait for the old GUI, install the selected release, and restart the current entry.
+   - Use `--wait-pid <old_gui_pid> --wait-timeout <seconds> --restart` when the standard runtime should wait for the old GUI, install or switch the selected release, and restart the current entry.
+   - Use `uot-updater switch-installed --wait-pid <old_gui_pid> --restart` when a GUI version picker switches to an already installed local release; keep this path under the same updater process model as remote installs.
+   - Expect `update-status.json` to include phase timing fields such as `started_at`, `phase_started_at`, `phase_elapsed_ms`, and `total_elapsed_ms`; use these for slow restart diagnostics.
    - Keep `latest.json` and `versions.json` on NAS only. Bundle `update-endpoint.json` into the app; keep `config/settings*.json` out of final user packages unless it is a deliberately generated runtime-safe settings file. Treat `update-status.json` as runtime state under the install root, not as a packaged file.
 
 6. Test update behavior:
    - Start from an older install root.
    - For legacy flat installs, generate and verify a migration package with `uot write-migration-package` and `uot verify-migration-package`, then run `uot migrate-install-root --dry-run` before enabling the new runtime flow.
    - Use `uot list-installed` to inspect local releases when validating rollback or local version switching.
-   - Use `uot switch-installed` only when the target release already exists under the install root; it uses `update.lock` and should not run concurrently with install or rollback.
+   - Use `uot switch-installed` only when the target release already exists under the install root; it uses `update.lock`, supports `--wait-pid` and `--restart`, and should not run concurrently with install or rollback.
    - Use `uot rollback` after a switch or runtime install when `current.json.previous_version` should become active again.
    - Check that update discovery sees the target version.
    - Trigger update from GUI or CLI.
@@ -116,5 +118,11 @@ python ~/.codex/skills/pyqt-nas-online-update/scripts/check_pyqt_uot_artifacts.p
   --install-dir dist/MyTool_install_v1.0.5 \
   --version 1.0.5 \
   --platform macos \
-  --app-exe MyTool
+  --app-exe MyTool.app \
+  --updater-exe MyToolUpdater
 ```
+
+The checker defaults to the UOT standard updater layout `updater/<updater-exe>`.
+For macOS app bundles it checks settings under
+`<app>.app/Contents/Resources/config/settings.json`; for Windows/Linux it checks
+`_internal/config/settings.json` under the versioned release directory.

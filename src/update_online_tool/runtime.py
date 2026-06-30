@@ -11,13 +11,13 @@ import subprocess
 import sys
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
-from update_online_tool.installed import switch_installed_version
+from update_online_tool.installed import switch_installed_version as _switch_installed_version
 from update_online_tool.locks import runtime_lock
 from update_online_tool.manifest import UpdateManifest
 
@@ -33,6 +33,8 @@ class RuntimeResult:
     release_dir: Path
     message: str
     restarted_pid: int | None = None
+    elapsed_ms: int = 0
+    phase_durations_ms: dict[str, int] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, object]:
         """转换为 update-result.json 负载。"""
@@ -46,6 +48,10 @@ class RuntimeResult:
         }
         if self.restarted_pid is not None:
             payload["restarted_pid"] = self.restarted_pid
+        if self.elapsed_ms:
+            payload["elapsed_ms"] = self.elapsed_ms
+        if self.phase_durations_ms:
+            payload["phase_durations_ms"] = dict(self.phase_durations_ms)
         return payload
 
 
@@ -60,6 +66,10 @@ class RuntimeStatus:
     previous_version: str
     action: str = "install_prepared"
     error: str = ""
+    started_at: str = ""
+    phase_started_at: str = ""
+    phase_elapsed_ms: int = 0
+    total_elapsed_ms: int = 0
 
     def to_payload(self) -> dict[str, object]:
         """转换为 update-status.json 负载。"""
@@ -73,9 +83,63 @@ class RuntimeStatus:
             "action": self.action,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+        if self.started_at:
+            payload["started_at"] = self.started_at
+        if self.phase_started_at:
+            payload["phase_started_at"] = self.phase_started_at
+        if self.phase_elapsed_ms:
+            payload["phase_elapsed_ms"] = self.phase_elapsed_ms
+        if self.total_elapsed_ms:
+            payload["total_elapsed_ms"] = self.total_elapsed_ms
         if self.error:
             payload["error"] = self.error
         return payload
+
+
+class RuntimeStatusTracker:
+    """记录 runtime 阶段状态和耗时。"""
+
+    def __init__(self, *, action: str, version: str, previous_version: str) -> None:
+        """初始化阶段计时器。"""
+        self.action = action
+        self.version = version
+        self.previous_version = previous_version
+        self.started_monotonic = time.monotonic()
+        self.phase_monotonic = self.started_monotonic
+        self.started_at = _utc_now_iso()
+        self.phase_started_at = self.started_at
+        self.current_phase = ""
+        self.phase_durations_ms: dict[str, int] = {}
+
+    def status(self, *, phase: str, percent: int, message: str, error: str = "") -> RuntimeStatus:
+        """创建带耗时信息的阶段状态。"""
+        now = time.monotonic()
+        if phase != self.current_phase:
+            if self.current_phase:
+                self.phase_durations_ms[self.current_phase] = int((now - self.phase_monotonic) * 1000)
+            self.current_phase = phase
+            self.phase_monotonic = now
+            self.phase_started_at = _utc_now_iso()
+        return RuntimeStatus(
+            phase=phase,
+            percent=percent,
+            message=message,
+            version=self.version,
+            previous_version=self.previous_version,
+            action=self.action,
+            error=error,
+            started_at=self.started_at,
+            phase_started_at=self.phase_started_at,
+            phase_elapsed_ms=int((now - self.phase_monotonic) * 1000),
+            total_elapsed_ms=int((now - self.started_monotonic) * 1000),
+        )
+
+    def finish(self) -> tuple[int, dict[str, int]]:
+        """结束计时并返回总耗时和阶段耗时。"""
+        now = time.monotonic()
+        if self.current_phase:
+            self.phase_durations_ms[self.current_phase] = int((now - self.phase_monotonic) * 1000)
+        return int((now - self.started_monotonic) * 1000), dict(self.phase_durations_ms)
 
 
 def install_prepared_package(
@@ -111,18 +175,21 @@ def install_prepared_package(
     releases_root = root / "releases"
     target_release_dir = releases_root / manifest.version
     temp_release_dir = releases_root / f".{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+    tracker = RuntimeStatusTracker(
+        action="install_prepared",
+        version=manifest.version,
+        previous_version=previous_version,
+    )
     try:
         if restart and not switch_current:
             raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "restart requires switching current.json")
         if wait_pid is not None and not dry_run:
             write_update_status(
                 root,
-                RuntimeStatus(
+                tracker.status(
                     phase="waiting_old_process",
                     percent=10,
                     message=f"waiting for old process {wait_pid} to exit",
-                    version=manifest.version,
-                    previous_version=previous_version,
                 ),
             )
             wait_for_process_exit(pid=wait_pid, timeout_seconds=wait_timeout)
@@ -130,12 +197,10 @@ def install_prepared_package(
             if not dry_run:
                 write_update_status(
                     root,
-                    RuntimeStatus(
+                    tracker.status(
                         phase="verifying",
                         percent=20,
                         message="verifying package",
-                        version=manifest.version,
-                        previous_version=previous_version,
                     ),
                 )
             _verify_package(package, manifest)
@@ -154,15 +219,14 @@ def install_prepared_package(
                 )
             write_update_status(
                 root,
-                RuntimeStatus(
+                tracker.status(
                     phase="extracting",
                     percent=45,
                     message="extracting package",
-                    version=manifest.version,
-                    previous_version=previous_version,
                 ),
             )
             _extract_zip_safe(package, temp_release_dir)
+            _promote_update_sidecars(extracted_root=temp_release_dir, install_root=root)
             _ensure_release_entry(temp_release_dir, resolved_entry_name)
             if target_release_dir.exists():
                 shutil.rmtree(target_release_dir)
@@ -170,15 +234,13 @@ def install_prepared_package(
             if switch_current:
                 write_update_status(
                     root,
-                    RuntimeStatus(
+                    tracker.status(
                         phase="switching",
                         percent=75,
                         message="switching current release",
-                        version=manifest.version,
-                        previous_version=previous_version,
                     ),
                 )
-                switch_installed_version(
+                _switch_installed_version(
                     install_root=root,
                     version=manifest.version,
                     entry_name=resolved_entry_name,
@@ -197,18 +259,17 @@ def install_prepared_package(
             if restart:
                 write_update_status(
                     root,
-                    RuntimeStatus(
+                    tracker.status(
                         phase="restarting",
                         percent=90,
                         message="restarting current release",
-                        version=manifest.version,
-                        previous_version=previous_version,
                     ),
                 )
                 try:
                     process = launch_current(install_root=root)
                 except OSError as exc:
                     raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}") from exc
+                elapsed_ms, phase_durations_ms = tracker.finish()
                 result = RuntimeResult(
                     success=True,
                     action="install_prepared",
@@ -217,16 +278,28 @@ def install_prepared_package(
                     release_dir=target_release_dir,
                     message="installed and restarted",
                     restarted_pid=process.pid,
+                    elapsed_ms=elapsed_ms,
+                    phase_durations_ms=phase_durations_ms,
+                )
+            else:
+                elapsed_ms, phase_durations_ms = tracker.finish()
+                result = RuntimeResult(
+                    success=result.success,
+                    action=result.action,
+                    version=result.version,
+                    previous_version=result.previous_version,
+                    release_dir=result.release_dir,
+                    message=result.message,
+                    elapsed_ms=elapsed_ms,
+                    phase_durations_ms=phase_durations_ms,
                 )
             write_update_result(root, result)
             write_update_status(
                 root,
-                RuntimeStatus(
+                tracker.status(
                     phase="success",
                     percent=100,
                     message=result.message,
-                    version=manifest.version,
-                    previous_version=previous_version,
                 ),
             )
             return result
@@ -241,12 +314,10 @@ def install_prepared_package(
                 )
                 write_update_status(
                     root,
-                    RuntimeStatus(
+                    tracker.status(
                         phase="failed",
                         percent=100,
                         message=str(exc),
-                        version=manifest.version,
-                        previous_version=previous_version,
                         error=str(exc),
                     ),
                 )
@@ -259,12 +330,10 @@ def install_prepared_package(
             )
             write_update_status(
                 root,
-                RuntimeStatus(
+                tracker.status(
                     phase="failed",
                     percent=100,
                     message=str(wrapped),
-                    version=manifest.version,
-                    previous_version=previous_version,
                     error=str(wrapped),
                 ),
             )
@@ -289,6 +358,16 @@ def apply_pending_update(
     if not isinstance(manifest_payload, dict):
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
     manifest = UpdateManifest.from_payload(manifest_payload)
+    resolved_wait_pid = wait_pid
+    if resolved_wait_pid is None:
+        raw_old_pid = payload.get("old_pid")
+        if raw_old_pid is not None:
+            try:
+                parsed_old_pid = int(raw_old_pid)
+            except (TypeError, ValueError):
+                parsed_old_pid = 0
+            if parsed_old_pid > 0:
+                resolved_wait_pid = parsed_old_pid
     return install_prepared_package(
         install_root=install_root,
         package_path=package_path,
@@ -297,10 +376,143 @@ def apply_pending_update(
         switch_current=True,
         force=force,
         dry_run=dry_run,
-        wait_pid=wait_pid,
+        wait_pid=resolved_wait_pid,
         wait_timeout=wait_timeout,
         restart=restart,
     )
+
+
+def switch_installed_release(
+    *,
+    install_root: Path,
+    version: str,
+    entry_name: str = "",
+    app_id: str = "",
+    platform: str = "",
+    wait_pid: int | None = None,
+    wait_timeout: float = 60.0,
+    restart: bool = False,
+) -> RuntimeResult:
+    """切换已安装版本并可等待旧进程退出后重启。
+
+    :param install_root: 安装根目录。
+    :param version: 目标版本。
+    :param entry_name: release 入口名；为空时从 current.json 推断。
+    :param app_id: 应用标识；为空时沿用 current.json。
+    :param platform: 平台；为空时沿用 current.json。
+    :param wait_pid: 切换前等待退出的旧进程 PID。
+    :param wait_timeout: 等待旧进程退出超时时间。
+    :param restart: 切换成功后启动当前版本。
+    :return: runtime 结果。
+    """
+    root = Path(install_root)
+    target_version = str(version or "").strip()
+    previous_version = _current_version(root)
+    target_release_dir = root / "releases" / target_version
+    tracker = RuntimeStatusTracker(
+        action="switch_installed",
+        version=target_version,
+        previous_version=previous_version,
+    )
+    try:
+        if wait_pid is not None:
+            write_update_status(
+                root,
+                tracker.status(
+                    phase="waiting_old_process",
+                    percent=10,
+                    message=f"waiting for old process {wait_pid} to exit",
+                ),
+            )
+            wait_for_process_exit(pid=wait_pid, timeout_seconds=wait_timeout)
+        with runtime_lock(root, action="switch_installed", dry_run=False):
+            write_update_status(
+                root,
+                tracker.status(
+                    phase="switching",
+                    percent=75,
+                    message="switching current release",
+                ),
+            )
+            switched = _switch_installed_version(
+                install_root=root,
+                version=target_version,
+                entry_name=entry_name,
+                app_id=app_id,
+                platform=platform,
+                use_lock=False,
+            )
+            restarted_pid = None
+            message = "switched"
+            if restart:
+                write_update_status(
+                    root,
+                    tracker.status(
+                        phase="restarting",
+                        percent=90,
+                        message="restarting current release",
+                    ),
+                )
+                try:
+                    process = launch_current(install_root=root)
+                except OSError as exc:
+                    raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}") from exc
+                restarted_pid = process.pid
+                message = "switched and restarted"
+            elapsed_ms, phase_durations_ms = tracker.finish()
+            result = RuntimeResult(
+                success=True,
+                action="switch_installed",
+                version=switched.version,
+                previous_version=previous_version,
+                release_dir=switched.release_dir,
+                message=message,
+                restarted_pid=restarted_pid,
+                elapsed_ms=elapsed_ms,
+                phase_durations_ms=phase_durations_ms,
+            )
+            write_update_result(root, result)
+            write_update_status(
+                root,
+                tracker.status(
+                    phase="success",
+                    percent=100,
+                    message=result.message,
+                ),
+            )
+            return result
+    except Exception as exc:
+        if isinstance(exc, UpdateError):
+            if exc.code is not UpdateErrorCode.UPDATE_LOCKED:
+                write_update_result(
+                    root,
+                    _failure_result("switch_installed", target_version, previous_version, target_release_dir, exc),
+                )
+                write_update_status(
+                    root,
+                    tracker.status(
+                        phase="failed",
+                        percent=100,
+                        message=str(exc),
+                        error=str(exc),
+                    ),
+                )
+            raise
+        wrapped = UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"switch failed: {exc}")
+        write_update_result(
+            root,
+            _failure_result("switch_installed", target_version, previous_version, target_release_dir, wrapped),
+        )
+        write_update_status(
+            root,
+            tracker.status(
+                phase="failed",
+                percent=100,
+                message=str(wrapped),
+                error=str(wrapped),
+            ),
+        )
+        raise wrapped from exc
 
 
 def rollback_installation(*, install_root: Path, entry_name: str = "") -> RuntimeResult:
@@ -316,7 +528,7 @@ def rollback_installation(*, install_root: Path, entry_name: str = "") -> Runtim
             previous_version = str(current_payload.get("previous_version", "")).strip()
             if not previous_version:
                 raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json has no previous_version")
-            switched = switch_installed_version(
+            switched = _switch_installed_version(
                 install_root=root,
                 version=previous_version,
                 entry_name=entry_name,
@@ -439,6 +651,11 @@ def write_update_status(install_root: Path, status: RuntimeStatus) -> None:
     path.write_text(json.dumps(status.to_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _utc_now_iso() -> str:
+    """返回 UTC ISO 时间戳。"""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def _failure_result(
     action: str,
     version: str,
@@ -525,6 +742,38 @@ def _extract_zip_symlink(archive: zipfile.ZipFile, member: zipfile.ZipInfo, extr
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe symlink target: {member.filename}")
     extracted_path.parent.mkdir(parents=True, exist_ok=True)
     extracted_path.symlink_to(link_target)
+
+
+def _promote_update_sidecars(*, extracted_root: Path, install_root: Path) -> None:
+    """把 update 包中的 launcher/updater sidecar 提升到安装根。"""
+    launcher_sidecar = extracted_root / "_launcher"
+    if launcher_sidecar.is_dir():
+        _copy_directory_contents(launcher_sidecar, install_root)
+        shutil.rmtree(launcher_sidecar)
+
+    updater_sidecar = extracted_root / "updater"
+    if updater_sidecar.is_dir():
+        target = install_root / "updater"
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(updater_sidecar, target, symlinks=True)
+        shutil.rmtree(updater_sidecar)
+
+
+def _copy_directory_contents(source: Path, target_root: Path) -> None:
+    """复制目录内容到目标根，覆盖同名文件或目录。"""
+    target_root.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        target = target_root / item.name
+        if target.exists():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        if item.is_dir() and not item.is_symlink():
+            shutil.copytree(item, target, symlinks=True)
+        else:
+            shutil.copy2(item, target, follow_symlinks=False)
 
 
 def _verify_zip_plan(package_path: Path, entry_name: str) -> None:

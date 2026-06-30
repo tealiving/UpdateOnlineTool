@@ -38,20 +38,18 @@ class PyQtPendingUpdateRequest:
 
 
 def build_pyqt_pending_payload(request: PyQtPendingUpdateRequest) -> dict[str, object]:
-    """构建 PyQt updater 兼容的扁平 pending payload。
+    """构建标准 UOT pending payload。
 
     :param request: PyQt updater 交接请求。
     :return: pending JSON 字典。
     """
     return {
-        "app_id": request.manifest.app_id,
-        "expected_sha256": request.manifest.package.sha256,
         "from_version": request.from_version or "unknown",
         "install_root": str(Path(request.install_root)),
         "old_pid": int(request.old_pid),
         "package_path": str(Path(request.package_path)),
+        "manifest": request.manifest.to_payload(),
         "restart_executable": request.restart_executable,
-        "to_version": request.manifest.version,
     }
 
 
@@ -95,7 +93,7 @@ def launch_existing_pending(
     popen_factory = popen or subprocess.Popen
     try:
         process = popen_factory(
-            [str(executable), "--pending", str(pending_path)],
+            [str(executable), "apply", "--pending", str(pending_path), "--restart"],
             cwd=str(executable.parent),
             close_fds=True,
         )

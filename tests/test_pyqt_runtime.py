@@ -35,8 +35,8 @@ def _manifest() -> UpdateManifest:
     )
 
 
-def test_write_pyqt_pending_manifest_uses_flat_auto_compatible_contract(tmp_path: Path) -> None:
-    """验证 pending manifest 使用 AutoMationManual updater 兼容扁平契约。
+def test_write_pyqt_pending_manifest_uses_standard_uot_contract(tmp_path: Path) -> None:
+    """验证 pending manifest 使用标准 UOT 契约。
 
     :param tmp_path: pytest 临时目录。
     :return: None
@@ -57,16 +57,13 @@ def test_write_pyqt_pending_manifest_uses_flat_auto_compatible_contract(tmp_path
 
     payload = json.loads(result.read_text(encoding="utf-8"))
     assert result == pending_path
-    assert payload == {
-        "app_id": "automation-manual-studio",
-        "expected_sha256": "0" * 64,
-        "from_version": "1.0.4",
-        "install_root": str(tmp_path),
-        "old_pid": 123,
-        "package_path": str(tmp_path / "package.zip"),
-        "restart_executable": "AutomationManualStudio.exe",
-        "to_version": "1.0.5",
-    }
+    assert payload["from_version"] == "1.0.4"
+    assert payload["install_root"] == str(tmp_path)
+    assert payload["old_pid"] == 123
+    assert payload["package_path"] == str(tmp_path / "package.zip")
+    assert payload["restart_executable"] == "AutomationManualStudio.exe"
+    assert payload["manifest"]["app_id"] == "automation-manual-studio"
+    assert payload["manifest"]["version"] == "1.0.5"
 
 
 def test_launch_existing_pending_starts_updater_without_rewriting_manifest(tmp_path: Path) -> None:
@@ -103,4 +100,4 @@ def test_launch_existing_pending_starts_updater_without_rewriting_manifest(tmp_p
     assert result.started is True
     assert result.updater_pid == 456
     assert result.pending_manifest_path == pending
-    assert calls == [[str(updater), "--pending", str(pending)]]
+    assert calls == [[str(updater), "apply", "--pending", str(pending), "--restart"]]

@@ -208,7 +208,7 @@ uot-updater rollback --install-root <install_root>
 uot-updater launch-current --install-root <install_root>
 ```
 
-`install-prepared` 和 `apply-update` 会校验包大小与 SHA-256，安全解压到 `releases/<target_version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 会创建 `update.lock` 防止并发更新；`switch-installed` 也使用同一把锁。失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段是 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是 UI 阶段提示，不是下载字节进度。`--wait-pid` 等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT`；`--restart` 会切换后启动当前入口并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度要由 updater 窗口或外部轮询进程读取状态文件。自定义 updater 仍可只复用 `prepare-version` 和 SDK。
+`install-prepared` 和 `apply-update` 会校验包大小与 SHA-256，安全解压到 `releases/<target_version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 会创建 `update.lock` 防止并发更新；`switch-installed` 也使用同一把锁。失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段是 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是 UI 阶段提示，不是下载字节进度；状态同时包含 `started_at`、`phase_started_at`、`phase_elapsed_ms`、`total_elapsed_ms` 等耗时字段。`--wait-pid` 等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT`；`--restart` 会切换后启动当前入口并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度要由 updater 窗口或外部轮询进程读取状态文件。
 `uot publish` 会维护通道 `versions.json` 版本索引，并把包写入 `<app_id>/<channel>/v<target_version>/`。`list-remote` 优先读取索引，并补充扫描通道版本目录和旧版 `<app_id>/v<version>/` 历史目录。历史版本选择器应把 `versions.json.manifest_url` 当作目标版本 manifest 的权威路径，并通过 `show-version` / `get_remote_manifest()` 获取；不要在 GUI 或项目适配器里自行拼 `<app>/<channel>/v<version>/latest.json`。同一版本号可在不同 channel 远端存放不同包，但安装根仍使用 `releases/<target_version>`；同一客户端从测试包升级到正式包时应使用递增版本号，或显式 `install-prepared --force` 覆盖同版本 release。
 
 诊断包：
@@ -234,10 +234,10 @@ uot migrate-install-root --install-root <install_root> --version <current_versio
 
 ```powershell
 uot list-installed --install-root <install_root>
-uot switch-installed --install-root <install_root> --version <target_version>
+uot-updater switch-installed --install-root <install_root> --version <target_version> --wait-pid <old_gui_pid> --restart
 ```
 
-`switch-installed` 只适用于 `releases/<target_version>/<app_exe>` 已存在的版本。它会在 `update.lock` 保护下原子更新安装根 `current.json` 并记录 `previous_version`，但不下载、不解压、不重启 GUI。
+`switch-installed` 只适用于 `releases/<target_version>/<app_exe>` 已存在的版本。它会在 `update.lock` 保护下原子更新安装根 `current.json` 并记录 `previous_version`；GUI 内版本选择器应优先交给 `uot-updater switch-installed --wait-pid --restart`，让本地切换和远端安装使用同一套后台进程模型。
 
 打包边界：
 
