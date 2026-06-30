@@ -63,6 +63,7 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Use publish policy flags when needed: `--allow-downgrade`, `--hidden`, `--requires-confirmation`, `--rollout-percent`, and `--data-schema-version`.
    - Use `uot list-remote --include-hidden` for operator-only version pickers; hidden versions are filtered from normal lists and normal update checks.
    - Expect `uot publish` to maintain channel `versions.json`; `list-remote` reads the index, supplements channel-scoped `v<version>` directories, and remains compatible with legacy global `<app-id>/v<version>` releases.
+   - Treat `versions.json.manifest_url` as the authoritative path for historical version pickers. GUI/project adapters should call `show-version`/`get_remote_manifest()` instead of constructing `<app>/<channel>/v<version>/latest.json` themselves.
    - Treat `prepare-version` as copy-and-verify only; use `uot install-prepared` or `uot apply-update` when the project wants UOT's standard runtime to install the selected package and change `current.json`.
    - Use the `package_path` returned by `prepare-version`; prepared packages are stored under `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/`.
    - Treat same-version cross-channel packages as remote storage isolation only. Local installs still use `releases/<version>` and version comparison still keys on the version number; use increasing versions for a client moving from test to stable, or explicitly use `install-prepared --force` to replace a same-version local release.
