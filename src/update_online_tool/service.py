@@ -196,6 +196,14 @@ class UpdateService:
             if legacy_manifest_path.is_file():
                 manifest_path = legacy_manifest_path
         if not manifest_path.is_file():
+            indexed_manifest = self._find_remote_manifest_by_version(
+                app_id=app_id,
+                version=version,
+                channel=resolved_channel,
+                platform=platform,
+            )
+            if indexed_manifest is not None:
+                return indexed_manifest
             raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {manifest_path}")
         manifest = self._load_manifest(manifest_path)
         self._validate_manifest_identity(
@@ -332,6 +340,35 @@ class UpdateService:
             if manifest_path.is_file():
                 manifest_paths.append(manifest_path)
         return manifest_paths
+
+    def _find_remote_manifest_by_version(
+        self,
+        *,
+        app_id: str,
+        version: str,
+        channel: str,
+        platform: str,
+    ) -> UpdateManifest | None:
+        """从索引或扫描结果中按版本查找 manifest。
+
+        :param app_id: 应用标识。
+        :param version: 目标版本。
+        :param channel: 发布通道。
+        :param platform: 平台标识。
+        :return: 找到时返回 manifest，否则返回 None。
+        """
+        for path in self._remote_version_manifest_paths(app_id, channel, platform):
+            manifest = self._load_manifest(path)
+            if manifest.version != version:
+                continue
+            self._validate_manifest_identity(
+                manifest,
+                app_id=app_id,
+                channel=channel,
+                platform=platform,
+            )
+            return manifest
+        return None
 
     def _validate_manifest_identity(
         self,

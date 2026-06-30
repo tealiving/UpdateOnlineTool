@@ -357,6 +357,58 @@ def test_service_get_remote_manifest_keeps_legacy_version_path_fallback(tmp_path
     assert manifest.package.url == "automation-manual-studio/v1.0.6/package.zip"
 
 
+def test_service_get_remote_manifest_uses_versions_index_when_direct_path_missing(tmp_path: Path) -> None:
+    """验证指定版本可复用 versions.json 中记录的真实 manifest 路径。"""
+    package = tmp_path / "automation-manual-studio" / "stable" / "custom" / "1.0.8" / "package.zip"
+    manifest_path = package.parent / "latest.json"
+    package.parent.mkdir(parents=True)
+    package.write_bytes(b"indexed")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "version": "1.0.8",
+                "mandatory": False,
+                "min_supported_version": "1.0.0",
+                "published_at": "2026-06-08T00:00:00+00:00",
+                "notes": "indexed",
+                "package": {
+                    "url": "automation-manual-studio/stable/custom/1.0.8/package.zip",
+                    "size": len(b"indexed"),
+                    "sha256": hashlib.sha256(b"indexed").hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "automation-manual-studio" / "stable" / "versions.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "platform": "",
+                "versions": [
+                    {
+                        "version": "1.0.8",
+                        "manifest_url": "automation-manual-studio/stable/custom/1.0.8/latest.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    manifest = service.get_remote_manifest(app_id="automation-manual-studio", version="1.0.8", channel="stable")
+
+    assert manifest.version == "1.0.8"
+    assert manifest.package.url == "automation-manual-studio/stable/custom/1.0.8/package.zip"
+
+
 def test_service_prepares_specific_remote_version(tmp_path: Path) -> None:
     """验证 SDK 可准备指定历史版本包。
 
