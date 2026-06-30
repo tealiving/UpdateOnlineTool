@@ -5,6 +5,7 @@ from __future__ import annotations
 from update_online_tool.diagnostics import collect_diagnostics, write_diagnostic_archive
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.downloader import CancellationToken, PreparedPackage
+from update_online_tool.desktop import DesktopUpdateClient, DesktopUpdateConfig
 from update_online_tool.installed import (
     InstalledVersion,
     MigrationResult,
@@ -58,7 +59,7 @@ from update_online_tool.signature import (
 )
 from update_online_tool.versioning import UpdateDecision
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "UpdateError",
@@ -67,6 +68,8 @@ __all__ = [
     "write_diagnostic_archive",
     "CancellationToken",
     "PreparedPackage",
+    "DesktopUpdateClient",
+    "DesktopUpdateConfig",
     "InstalledVersion",
     "MigrationResult",
     "list_installed_versions",

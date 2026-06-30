@@ -256,6 +256,9 @@ def _build_parser() -> argparse.ArgumentParser:
     rollback = subparsers.add_parser("rollback", help="Rollback current.json to previous_version.")
     rollback.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
     rollback.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+    rollback.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before rollback.")
+    rollback.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
+    rollback.add_argument("--restart", action="store_true", help="Restart the current release after rollback.")
 
     launch_current_parser = subparsers.add_parser("launch-current", help="Launch the current release entry.")
     launch_current_parser.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
@@ -688,7 +691,7 @@ def _prepare_version(args: argparse.Namespace) -> int:
     settings = _load_settings_arg(args)
     platform = _normalize_optional_platform(args.platform)
     service = UpdateService(settings)
-    manifest = service.get_remote_manifest(
+    manifest, manifest_path = service.get_remote_manifest_with_path(
         app_id=args.app,
         version=args.version,
         channel=args.channel or settings.default_channel,
@@ -700,6 +703,7 @@ def _prepare_version(args: argparse.Namespace) -> int:
         "version": manifest.version,
         "channel": manifest.channel,
         "platform": manifest.platform,
+        "manifest_path": str(manifest_path),
         "package_path": str(prepared.package_path),
         "sha256": prepared.sha256,
         "verified": prepared.verified,
@@ -829,6 +833,9 @@ def _rollback(args: argparse.Namespace) -> int:
     result = rollback_installation(
         install_root=Path(args.install_root),
         entry_name=args.entry_name,
+        wait_pid=args.wait_pid,
+        wait_timeout=float(args.wait_timeout),
+        restart=bool(args.restart),
     )
     print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
     return 0

@@ -182,14 +182,16 @@ uot verify --settings <settings_file> --app <app_id> --signature-key config\uot-
 
 `keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会写入 manifest `signature`；`verify --signature-key`、`install-prepared --signature-key` 和 `apply-update --signature-key` 会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。
 
-`prepare-version` 只复制并校验指定版本包到 `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/package.zip`，不直接修改安装根或 `current.json`。后续命令应使用 JSON 输出里的 `package_path`。如果使用 UOT 标准 runtime，可以继续执行：
+`prepare-version` 只复制并校验指定版本包到 `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/package.zip`，不直接修改安装根或 `current.json`。后续命令应使用 JSON 输出里的 `package_path` 和 `manifest_path`。如果使用 UOT 标准 runtime，可以继续执行：
 
 ```powershell
 uot install-prepared --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --dry-run
 uot install-prepared --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub
 uot apply-update --pending <install_root>\pending-update.json --signature-key config\uot-signing.pub
-uot rollback --install-root <install_root>
+uot rollback --install-root <install_root> --wait-pid <old_gui_pid> --wait-timeout 60 --restart
 ```
+
+GUI 接入时优先调用 `DesktopUpdateClient`，由 UOT 解析 settings、选择 NAS root、读取 `current.json`、准备包、写 pending、解析 updater 路径并启动标准 updater。工具库只展示 `check()`、`list_remote_versions()`、`read_status()`、`read_result()` 返回的数据，并在用户确认后调用 `install_remote_version()`、`switch_installed_version()` 或 `rollback()`。
 
 最终应用内的独立 updater 可使用更窄的 `uot-updater` 入口：
 
@@ -199,12 +201,12 @@ python -m PyInstaller --noconfirm build\updater\<updater_name>.spec
 uot assemble-pyinstaller --version <target_version> --product-name <product_name> --settings <settings_file> --updater-bundle dist\<updater_name> --force
 ```
 
-`--updater-bundle` 可以指向 onefile 文件或 onedir 目录；装配后会复制到安装根 `updater/`。完整安装包应携带 `updater/`，升级 zip 不应预置远端 `latest.json` 或运行态 `pending-update.json`、`update-result.json`、`update-status.json`。
+`--updater-bundle` 可以指向 onefile 文件或 onedir 目录；装配后会复制到安装根 `updater/` 和升级目录 `updater/`。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater/`；接入方脚本不应再手工复制根目录 updater 或 `_launcher/updater`。升级 zip 不应预置远端 `latest.json` 或运行态 `pending-update.json`、`update-result.json`、`update-status.json`。
 
 ```powershell
 uot-updater install --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --wait-pid <old_gui_pid> --wait-timeout 60 --restart
 uot-updater apply --pending <install_root>\pending-update.json --signature-key config\uot-signing.pub --restart
-uot-updater rollback --install-root <install_root>
+uot-updater rollback --install-root <install_root> --wait-pid <old_gui_pid> --wait-timeout 60 --restart
 uot-updater launch-current --install-root <install_root>
 ```
 

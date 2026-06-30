@@ -11,8 +11,9 @@
 - 比较当前版本和远端版本。
 - 从 NAS 复制升级包到本地更新目录。
 - 校验包体大小和 SHA-256。
-- 写入 pending update manifest。
-- 启动独立 updater 可执行文件。
+- 写入 pending update manifest，启动标准 updater。
+- 安装远端版本、切换本地版本、回滚版本并按需重启当前入口。
+- 维护 `current.json`、`update-result.json`、`update-status.json` 和 `update.lock`。
 - 通过 `uot` CLI 发布、校验和检查 release。
 
 它不提供：
@@ -20,7 +21,6 @@
 - GUI 组件或弹窗。
 - 内置 PyQt `QThread`。
 - 安装器界面。
-- 适用于所有桌面外壳的通用文件替换引擎。
 - GitHub、DevOps、HTTP、Electron、Rust 或 Tauri 的首版一等适配器。
 
 ## 2. 前端兼容边界
@@ -282,7 +282,7 @@ uot show-version --settings config\settings.json --app my-tool --version 1.0.4 -
 uot prepare-version --settings config\settings.json --app my-tool --version 1.0.4 --platform windows --download-dir updates
 ```
 
-`prepare-version` 只复制并校验包到 `updates\<app>\<channel>\<platform-or-any>\<version>\package.zip`，不直接改安装根或 `current.json`。调用方应使用命令输出里的 `package_path`。已准备包可以交给标准 runtime 安装：
+`prepare-version` 只复制并校验包到 `updates\<app>\<channel>\<platform-or-any>\<version>\package.zip`，不直接改安装根或 `current.json`。调用方应使用命令输出里的 `package_path` 和 `manifest_path`。已准备包可以交给标准 runtime 安装：
 
 ```powershell
 uot install-prepared --install-root D:\Tools\MyTool --package updates\my-tool\stable\windows\1.0.4\package.zip --manifest updates\latest.json
@@ -303,7 +303,7 @@ uot assemble-pyinstaller `
   --force
 ```
 
-`--updater-bundle` 可以是 PyInstaller onefile 文件或 onedir 目录，装配后会进入安装根 `updater\`。完整安装包应携带 `updater\`；升级 zip 不应预置 `latest.json`、`pending-update.json`、`update-result.json` 或 `update-status.json`。
+`--updater-bundle` 可以是 PyInstaller onefile 文件或 onedir 目录，装配后会进入安装根 `updater\` 和升级目录 `updater\`。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater\`；接入方脚本不应再手工复制根目录 updater 或 `_launcher\updater`。升级 zip 不应预置 `latest.json`、`pending-update.json`、`update-result.json` 或 `update-status.json`。
 
 ```powershell
 uot-updater install --install-root D:\Tools\MyTool --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --wait-pid 12345 --wait-timeout 60 --restart
@@ -347,9 +347,10 @@ uot migrate-install-root --install-root D:\Tools\MyTool --version 1.0.0 --entry-
 ```powershell
 uot list-installed --install-root D:\Tools\MyTool
 uot switch-installed --install-root D:\Tools\MyTool --version 1.0.4
+uot-updater switch-installed --install-root D:\Tools\MyTool --version 1.0.4 --wait-pid 12345 --wait-timeout 60 --restart
 ```
 
-`switch-installed` 只适用于 `releases\<version>\<app_exe>` 已存在的版本。它会记录 `previous_version` 供 `rollback` 使用，但不下载、不解压、不重启 GUI；接入方应在切换后自行重启或让稳定 launcher 下次启动时进入目标版本。
+`switch-installed` 只适用于 `releases\<version>\<app_exe>` 已存在的版本。它会记录 `previous_version` 供 `rollback` 使用，但不下载、不解压。GUI 版本选择器应优先调用随应用打包的 `uot-updater switch-installed --wait-pid <old_gui_pid> --restart`，让标准 updater 等待旧 GUI 退出、切换 `current.json`，再按当前稳定入口重启目标版本；仅运维命令行手动切换时才直接使用 `uot switch-installed` 并自行启动应用。
 
 文件打包归属：
 
@@ -373,47 +374,43 @@ CLI 写入的 NAS 目录结构：
 
 ## 7. 在 Python 工具中使用 SDK
 
-最小检查和准备升级流程：
+GUI 工具项目应优先使用 `DesktopUpdateClient`。它是面向桌面应用的高层 facade，负责检查更新、列出远端版本、准备并启动标准 updater、切换本地版本、回滚和读取状态文件。工具项目只提供 `app_id`、安装根、settings 路径、平台和 GUI 展示逻辑。
 
 ```python
 from pathlib import Path
 
-from update_online_tool import UpdateDecision, UpdateService
+from update_online_tool import DesktopUpdateClient, DesktopUpdateConfig, UpdateDecision
 
 
-service = UpdateService.from_settings(Path("config/settings.json"))
-result = service.check(
-    app_id="my-tool",
-    current_version="1.0.5",
-    channel="stable",
+client = DesktopUpdateClient.from_config(
+    DesktopUpdateConfig(
+        app_id="my-tool",
+        install_root=Path(r"D:\Tools\MyTool"),
+        settings_path=Path("config/settings.json"),
+        platform="windows",
+    )
 )
 
+result = client.check()
 if result.decision in {UpdateDecision.OPTIONAL_UPDATE, UpdateDecision.MANDATORY_UPDATE}:
-    prepared = service.prepare(
-        result.manifest,
-        Path("updates"),
-        progress=lambda copied, total: print(copied, total),
-    )
-    print(prepared.package_path)
+    client.install_remote_version(result.manifest.version, old_pid=12345, restart=True)
 ```
 
-`check()` 和 `prepare()` 都是后端操作。GUI 程序应在 worker 线程中调用，并把进度转换为对应前端的 signal/event。
-
-## 8. 启动 updater
-
-接入方工具必须提供独立 updater 可执行文件。首版 updater 可以由工具项目实现，但安装目录、launcher 归一化和 `current.json` 标准结构由 UOT 的 `assemble-pyinstaller` 生成。
-
-如果 updater 接受 SDK 通用 pending payload，可以使用 `UpdateService.launch()`：
+历史版本选择器不需要拼 NAS 路径或解析 `versions.json.manifest_url`：
 
 ```python
-service.launch(
-    package_path=prepared.package_path,
-    manifest=result.manifest,
-    install_root=Path(r"D:\Tools\MyTool"),
-    old_pid=12345,
-    restart_executable="MyTool.exe",
-)
+versions = client.list_remote_versions(include_hidden=False)
+client.install_remote_version("1.0.4", old_pid=12345, restart=True, force=False)
+client.switch_installed_version("1.0.3", old_pid=12345, restart=True)
+client.rollback(old_pid=12345, restart=True)
+status = client.read_status()
 ```
+
+`UpdateService`、`prepare-version`、`pyqt_runtime` 仍保留给发布工具、测试脚本和旧项目兼容。新 GUI 不应自行拼 updater 命令，不应读取或修改 `current.json`，也不应构造版本目录里的 `latest.json` 路径。
+
+## 8. 标准 updater 运行时
+
+最终应用应随安装根携带 UOT 打包出的 `updater/` sidecar。GUI 调用 `DesktopUpdateClient` 后，UOT 会通过该 updater 执行安装、切换、回滚、等待旧进程退出和重启。项目脚本只需要在发布前确保 `uot assemble-pyinstaller --updater-bundle <path>` 已把 sidecar 放入安装根和升级 zip。
 
 SDK 通用 pending payload 结构如下：
 
@@ -439,7 +436,7 @@ SDK 通用 pending payload 结构如下：
 }
 ```
 
-如果 updater 需要 PyQt 扁平 pending 契约，使用 `update_online_tool.pyqt_runtime`：
+低层兼容场景仍可直接使用 `UpdateService.launch()` 或 `update_online_tool.pyqt_runtime` 写入 pending manifest，但这只适用于已有自定义 updater 的旧项目。标准新接入应使用 `DesktopUpdateClient`。
 
 ```python
 from update_online_tool.pyqt_runtime import (
@@ -475,7 +472,7 @@ launch_existing_pending(
 - 包体构建脚本。
 - 前端更新按钮、弹窗、进度、取消和重试交互。
 - worker 线程或任务调度。
-- 独立 updater 可执行文件。
+- 调用 `DesktopUpdateClient` 并展示其返回数据。
 - 日志和用户可见的排障信息。
 
 `update-online-tool` 负责：
@@ -484,10 +481,11 @@ launch_existing_pending(
 - manifest schema。
 - 版本决策。
 - 包体复制和校验。
-- pending manifest 辅助函数。
+- pending manifest 和标准 updater 启动。
+- 安装、切换、回滚、等待旧进程退出、重启当前入口。
 - CLI 发布、校验和检查命令。
-- PyInstaller GUI bundle + launcher bundle 的标准装配。
-- 安装根目录、`current.json`、`releases/<version>` 和 `_launcher` 目录约定。
+- PyInstaller GUI bundle、launcher bundle 和 updater sidecar 的标准装配。
+- 安装根目录、`current.json`、`releases/<version>`、`updater/` 和 `_launcher` 目录约定。
 
 ## 10. 最小端到端流程
 
@@ -496,8 +494,8 @@ launch_existing_pending(
 3. 发布端把升级目录压缩为包体并运行 `uot publish`。
 4. 发布端运行 `uot verify`。
 5. 用户启动旧版本安装根目录的稳定 launcher。
-6. 前端调用 SDK `check()`。
-7. 用户确认后，前端调用 SDK `prepare()`。
-8. 前端写入 pending manifest 并启动 updater。
-9. 前端退出。
-10. Updater 安装新 release，切换 `current.json`，并由稳定 launcher 打开新版本 GUI。
+6. 前端调用 `DesktopUpdateClient.check()` 或 `list_remote_versions()`。
+7. 用户确认后，前端调用 `install_remote_version()`、`switch_installed_version()` 或 `rollback()`。
+8. UOT 写入 pending 或构造 updater 命令，并启动安装根内的标准 updater。
+9. Updater 等待旧 GUI 退出，安装/切换/回滚，更新状态文件并重启当前入口。
+10. 新 GUI 启动后读取 `read_status()` / `read_result()` 展示上次执行结果。

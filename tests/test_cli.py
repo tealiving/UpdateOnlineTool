@@ -638,7 +638,78 @@ def test_cli_prepare_version_copies_specific_package(tmp_path: Path, capsys: pyt
     assert exit_code == 0
     assert payload["version"] == "1.0.4"
     assert payload["verified"] is True
+    assert Path(payload["manifest_path"]).is_file()
     assert Path(payload["package_path"]).read_bytes() == b"rollback"
+
+
+def test_cli_prepare_version_outputs_indexed_manifest_path(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 prepare-version 输出 versions.json 实际命中的 manifest 路径。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    payload_bytes = b"indexed"
+    package_path = nas_root / "automation-manual-studio" / "stable" / "custom" / "1.0.8" / "package.zip"
+    manifest_path = package_path.parent / "latest.json"
+    package_path.parent.mkdir(parents=True)
+    package_path.write_bytes(payload_bytes)
+    _settings(settings_path, nas_root)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "version": "1.0.8",
+                "mandatory": False,
+                "min_supported_version": "1.0.0",
+                "published_at": "2026-06-08T00:00:00+00:00",
+                "notes": "indexed",
+                "package": {
+                    "url": "automation-manual-studio/stable/custom/1.0.8/package.zip",
+                    "size": len(payload_bytes),
+                    "sha256": hashlib.sha256(payload_bytes).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (nas_root / "automation-manual-studio" / "stable" / "versions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "versions": [
+                    {
+                        "version": "1.0.8",
+                        "manifest_url": "automation-manual-studio/stable/custom/1.0.8/latest.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "prepare-version",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+            "--version",
+            "1.0.8",
+            "--download-dir",
+            str(tmp_path / "downloads"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert Path(payload["manifest_path"]) == manifest_path
+    assert Path(payload["package_path"]).read_bytes() == payload_bytes
 
 
 def test_cli_list_installed_outputs_install_root_versions(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1188,8 +1259,10 @@ def test_cli_assemble_pyinstaller_copies_updater_bundle(tmp_path: Path) -> None:
     )
 
     install_root = dist / "MyTool_install_v1.0.5"
+    update_root = dist / "MyTool_update_v1.0.5"
     assert exit_code == 0
     assert (install_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
+    assert (update_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
 
 
 def test_cli_assemble_pyinstaller_supports_macos_onedir(tmp_path: Path) -> None:

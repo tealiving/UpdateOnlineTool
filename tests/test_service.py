@@ -322,6 +322,118 @@ def test_service_list_remote_versions_supplements_versions_index(tmp_path: Path)
     assert [item.version for item in versions] == ["1.0.5", "1.0.4"]
 
 
+def test_service_list_remote_versions_deduplicates_indexed_version_over_scanned_path(tmp_path: Path) -> None:
+    """验证 versions.json 中的同版本路径优先于扫描到的旧路径。"""
+    _write_manifest(tmp_path, version="1.0.8", content=b"direct", notes="direct")
+    indexed_package = tmp_path / "automation-manual-studio" / "stable" / "custom" / "1.0.8" / "package.zip"
+    indexed_manifest = indexed_package.parent / "latest.json"
+    indexed_package.parent.mkdir(parents=True)
+    indexed_package.write_bytes(b"indexed")
+    indexed_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "version": "1.0.8",
+                "mandatory": False,
+                "min_supported_version": "1.0.0",
+                "published_at": "2026-06-08T00:00:00+00:00",
+                "notes": "indexed",
+                "package": {
+                    "url": "automation-manual-studio/stable/custom/1.0.8/package.zip",
+                    "size": len(b"indexed"),
+                    "sha256": hashlib.sha256(b"indexed").hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "automation-manual-studio" / "stable" / "versions.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "platform": "",
+                "versions": [
+                    {
+                        "version": "1.0.8",
+                        "manifest_url": "automation-manual-studio/stable/custom/1.0.8/latest.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    versions = service.list_remote_versions(app_id="automation-manual-studio", channel="stable")
+
+    assert [(item.version, item.notes) for item in versions] == [("1.0.8", "indexed")]
+    assert versions[0].manifest_path == indexed_manifest
+
+
+def test_service_list_remote_versions_hidden_index_blocks_visible_duplicate(tmp_path: Path) -> None:
+    """验证 hidden 索引版本不会被同版本扫描路径重新补回普通列表。"""
+    _write_manifest(tmp_path, version="1.0.8", content=b"direct", notes="direct")
+    indexed_package = tmp_path / "automation-manual-studio" / "stable" / "custom" / "1.0.8" / "package.zip"
+    indexed_manifest = indexed_package.parent / "latest.json"
+    indexed_package.parent.mkdir(parents=True)
+    indexed_package.write_bytes(b"indexed")
+    indexed_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "version": "1.0.8",
+                "mandatory": False,
+                "min_supported_version": "1.0.0",
+                "published_at": "2026-06-08T00:00:00+00:00",
+                "notes": "indexed hidden",
+                "hidden": True,
+                "package": {
+                    "url": "automation-manual-studio/stable/custom/1.0.8/package.zip",
+                    "size": len(b"indexed"),
+                    "sha256": hashlib.sha256(b"indexed").hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "automation-manual-studio" / "stable" / "versions.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "platform": "",
+                "versions": [
+                    {
+                        "version": "1.0.8",
+                        "manifest_url": "automation-manual-studio/stable/custom/1.0.8/latest.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    visible_versions = service.list_remote_versions(app_id="automation-manual-studio", channel="stable")
+    all_versions = service.list_remote_versions(
+        app_id="automation-manual-studio",
+        channel="stable",
+        include_hidden=True,
+    )
+
+    assert visible_versions == []
+    assert [(item.version, item.notes) for item in all_versions] == [("1.0.8", "indexed hidden")]
+
+
 def test_service_get_remote_manifest_supports_platform_version(tmp_path: Path) -> None:
     """验证 SDK 可读取平台隔离的指定版本 manifest。
 
@@ -403,10 +515,73 @@ def test_service_get_remote_manifest_uses_versions_index_when_direct_path_missin
     )
     service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
 
-    manifest = service.get_remote_manifest(app_id="automation-manual-studio", version="1.0.8", channel="stable")
+    manifest, actual_manifest_path = service.get_remote_manifest_with_path(
+        app_id="automation-manual-studio",
+        version="1.0.8",
+        channel="stable",
+    )
 
     assert manifest.version == "1.0.8"
     assert manifest.package.url == "automation-manual-studio/stable/custom/1.0.8/package.zip"
+    assert actual_manifest_path == manifest_path
+
+
+def test_service_get_remote_manifest_prefers_versions_index_over_direct_path(tmp_path: Path) -> None:
+    """验证历史版本选择以 versions.json.manifest_url 为权威路径。"""
+    _write_manifest(tmp_path, version="1.0.8", content=b"direct")
+    indexed_package = tmp_path / "automation-manual-studio" / "stable" / "custom" / "1.0.8" / "package.zip"
+    indexed_manifest_path = indexed_package.parent / "latest.json"
+    indexed_package.parent.mkdir(parents=True)
+    indexed_package.write_bytes(b"indexed")
+    indexed_manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "version": "1.0.8",
+                "mandatory": False,
+                "min_supported_version": "1.0.0",
+                "published_at": "2026-06-08T00:00:00+00:00",
+                "notes": "indexed",
+                "package": {
+                    "url": "automation-manual-studio/stable/custom/1.0.8/package.zip",
+                    "size": len(b"indexed"),
+                    "sha256": hashlib.sha256(b"indexed").hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "automation-manual-studio" / "stable" / "versions.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "platform": "",
+                "versions": [
+                    {
+                        "version": "1.0.8",
+                        "manifest_url": "automation-manual-studio/stable/custom/1.0.8/latest.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    manifest, actual_manifest_path = service.get_remote_manifest_with_path(
+        app_id="automation-manual-studio",
+        version="1.0.8",
+        channel="stable",
+    )
+
+    assert manifest.notes == "indexed"
+    assert manifest.package.url == "automation-manual-studio/stable/custom/1.0.8/package.zip"
+    assert actual_manifest_path == indexed_manifest_path
 
 
 def test_service_prepares_specific_remote_version(tmp_path: Path) -> None:

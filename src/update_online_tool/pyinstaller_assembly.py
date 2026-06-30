@@ -231,6 +231,7 @@ def assemble_pyinstaller_release(config: PyInstallerAssemblyConfig) -> PyInstall
     shutil.copytree(config.launcher_dir, update_launcher_dir, symlinks=True)
     _normalize_executable(update_launcher_dir, launcher_source_exe.name, desired_entry)
     _copy_settings_if_requested(config.settings_path, config.update_output)
+    _copy_updater_bundle(config.updater_bundle, config.update_output / "updater", config.updater_name)
 
     return PyInstallerAssemblyResult(
         install_root=config.install_output,

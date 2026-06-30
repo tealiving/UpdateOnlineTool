@@ -92,6 +92,38 @@ def test_rollback_installation_switches_to_previous_version(tmp_path: Path) -> N
     assert current_payload["previous_version"] == "1.1.0"
 
 
+def test_rollback_installation_can_wait_and_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 runtime 回滚可等待旧进程退出并重启。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    package_path = _write_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
+    manifest = _manifest(package_path, version="1.1.0")
+    install_prepared_package(install_root=install_root, package_path=package_path, manifest=manifest)
+
+    class FakeProcess:
+        """测试进程对象。"""
+
+        pid = 5252
+
+    monkeypatch.setattr(runtime, "wait_for_process_exit", lambda *, pid, timeout_seconds: None)
+    monkeypatch.setattr(runtime, "launch_current", lambda *, install_root: FakeProcess())
+
+    result = rollback_installation(
+        install_root=install_root,
+        wait_pid=os.getpid(),
+        restart=True,
+    )
+
+    status_payload = json.loads((install_root / "update-status.json").read_text(encoding="utf-8"))
+    result_payload = json.loads((install_root / "update-result.json").read_text(encoding="utf-8"))
+    assert result.message == "rolled back and restarted"
+    assert result.restarted_pid == 5252
+    assert status_payload["phase"] == "success"
+    assert result_payload["phase_durations_ms"]["restarting"] >= 0
+
+
 def test_switch_installed_release_can_restart_current_release(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -231,6 +263,40 @@ def test_install_prepared_package_promotes_launcher_and_updater_sidecars(tmp_pat
     assert not (release_root / "_launcher").exists()
     assert not (release_root / "updater").exists()
     assert (install_root / "MyTool.exe").read_text(encoding="utf-8") == "launcher"
+    assert (install_root / "updater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
+
+
+def test_install_prepared_package_extracts_package_outside_releases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证完整 update 包先解到安装根 staging，而不是 releases 目录。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    package_path = _write_package(
+        tmp_path / "package.zip",
+        {
+            "MyTool.exe": "new",
+            "updater/MyToolUpdater.exe": "updater",
+        },
+    )
+    manifest = _manifest(package_path, version="1.1.0")
+    extracted_targets: list[Path] = []
+    original_extract = runtime._extract_zip_safe
+
+    def spy_extract_zip_safe(package: Path, target_dir: Path) -> None:
+        """记录解压目标后继续执行真实解压。"""
+        extracted_targets.append(target_dir)
+        original_extract(package, target_dir)
+
+    monkeypatch.setattr(runtime, "_extract_zip_safe", spy_extract_zip_safe)
+
+    install_prepared_package(install_root=install_root, package_path=package_path, manifest=manifest)
+
+    assert len(extracted_targets) == 1
+    assert extracted_targets[0].parent == install_root
+    assert not extracted_targets[0].is_relative_to(install_root / "releases")
+    assert (install_root / "releases" / "1.1.0" / "MyTool.exe").read_text(encoding="utf-8") == "new"
+    assert not (install_root / "releases" / "1.1.0" / "updater").exists()
     assert (install_root / "updater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
 
 

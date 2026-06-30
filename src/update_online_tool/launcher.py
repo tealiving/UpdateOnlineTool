@@ -62,7 +62,15 @@ class StandaloneUpdaterLauncher:
             json.dumps(pending_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        command = [str(self.updater_executable), "apply", "--pending", str(pending_manifest_path), "--restart"]
+        command = [str(self.updater_executable), "apply", "--pending", str(pending_manifest_path)]
+        restart = _coerce_bool(pending_payload.get("restart"), default=True)
+        if restart:
+            command.append("--restart")
+        if _coerce_bool(pending_payload.get("force"), default=False):
+            command.append("--force")
+        restart_executable = _coerce_non_empty_string(pending_payload.get("restart_executable"))
+        if restart_executable is not None:
+            command.extend(["--entry-name", restart_executable])
         old_pid = _coerce_positive_int(pending_payload.get("old_pid"))
         if old_pid is not None:
             command.extend(["--wait-pid", str(old_pid)])
@@ -85,9 +93,35 @@ class StandaloneUpdaterLauncher:
 
 
 def _coerce_positive_int(value: object) -> int | None:
-    """解析正整数 PID。"""
+    """解析正整数 PID。
+
+    :param value: 待解析值。
+    :return: 正整数；无效时返回 None。
+    """
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _coerce_non_empty_string(value: object) -> str | None:
+    """解析非空字符串。
+
+    :param value: 待解析值。
+    :return: 去空格后的字符串；无效时返回 None。
+    """
+    if not isinstance(value, str):
+        return None
+    parsed = value.strip()
+    return parsed or None
+
+
+def _coerce_bool(value: object, *, default: bool) -> bool:
+    """解析布尔值。
+
+    :param value: 待解析值。
+    :param default: 非布尔值时使用的默认值。
+    :return: 解析后的布尔值。
+    """
+    return value if isinstance(value, bool) else default

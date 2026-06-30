@@ -365,7 +365,7 @@ uot show-version --settings config/settings.json --app my-tool --version 1.0.4 -
 uot prepare-version --settings config/settings.json --app my-tool --version 1.0.4 --platform macos --download-dir updates/
 ```
 
-`uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取索引，并补充扫描该通道 `v<version>` 与旧版全局 `v<version>` 历史目录后输出 JSON。`prepare-version` 会复制并校验目标版本的包到 `updates/<app>/<channel>/<platform-or-any>/<version>/package.zip`，但不直接修改安装根或 `current.json`。调用方应使用命令输出里的 `package_path`。
+`uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取索引，并补充扫描该通道 `v<version>` 与旧版全局 `v<version>` 历史目录后输出 JSON。`prepare-version` 会复制并校验目标版本的包到 `updates/<app>/<channel>/<platform-or-any>/<version>/package.zip`，但不直接修改安装根或 `current.json`。调用方应使用命令输出里的 `package_path` 和 `manifest_path`。
 
 已准备好的 zip 包可以交给标准 updater runtime 安装。runtime 会校验包大小和 SHA-256，安全解压到 `releases/<version>`，切换 `current.json`，并写入 `update-result.json`：
 
@@ -392,7 +392,7 @@ uot assemble-pyinstaller \
   --force
 ```
 
-`--updater-bundle` 可以指向 PyInstaller onefile 文件或 onedir 目录，UOT 会复制到安装根 `updater/` 下。完整安装包应包含这个 `updater/` 目录；升级 zip 不需要预置远端 `latest.json` 或运行态 `pending-update.json`。
+`--updater-bundle` 可以指向 PyInstaller onefile 文件或 onedir 目录，UOT 会复制到安装根 `updater/` 和升级目录 `updater/` 下。完整安装包与升级 zip 都应包含这个标准 `updater/` sidecar；升级 zip 不需要预置远端 `latest.json` 或运行态 `pending-update.json`。
 
 ```bash
 uot-updater install \
@@ -405,7 +405,7 @@ uot-updater install \
   --restart
 
 uot-updater apply --pending /Applications/MyTool/pending-update.json --signature-key config/uot-signing.pub --restart
-uot-updater rollback --install-root /Applications/MyTool
+uot-updater rollback --install-root /Applications/MyTool --wait-pid 12345 --wait-timeout 60 --restart
 uot-updater launch-current --install-root /Applications/MyTool
 ```
 
@@ -428,7 +428,7 @@ uot list-installed --install-root /Applications/MyTool
 uot switch-installed --install-root /Applications/MyTool --version 1.0.4
 ```
 
-`switch-installed` 会校验 `releases/<version>/<entry>` 存在，并在安装根 `update.lock` 保护下原子更新 `current.json`，同时记录 `previous_version` 供 `rollback` 使用。它不下载包、不解压包，也不重启 GUI；接入方可在切换后自行重启或让 launcher 下次启动时进入目标版本。
+`switch-installed` 会校验 `releases/<version>/<entry>` 存在，并在安装根 `update.lock` 保护下原子更新 `current.json`，同时记录 `previous_version` 供 `rollback` 使用。GUI 版本选择器应优先通过 `DesktopUpdateClient.switch_installed_version()` 或打包后的 `uot-updater switch-installed --wait-pid <pid> --restart` 进入标准等待和重启流程，不要在工具库自行修改 `current.json`。
 
 现场排障可收集诊断报告和诊断包：
 
@@ -446,10 +446,10 @@ uot doctor \
 1. `assemble-pyinstaller` 或接入方构建脚本生成安装根和 update zip 内容。
 2. `publish --platform ... --sign-key ...` 把包、版本 manifest、通道 `latest.json`、`versions.json` 写入 NAS。
 3. 客户端 `check` 只看当前通道 latest，自动更新不会使用 hidden 版本。
-4. GUI/CLI 需要历史版本时用 `list-remote`、`show-version`、`prepare-version` 选择并下载指定版本。
+4. GUI 需要历史版本时用 `DesktopUpdateClient.list_remote_versions()` 展示，并用 `install_remote_version()` 下载和安装指定版本；运维 CLI 可使用 `list-remote`、`show-version`、`prepare-version`。
 5. `install-prepared --signature-key --dry-run` 预检包和 manifest。
-6. 开发环境可用 `uot install-prepared` 或 `uot apply-update`；最终应用内建议调用打包后的 `uot-updater install/apply`。
-7. `switch-installed` 只切换本地已安装版本；`rollback` 回到 `previous_version`。
+6. 开发环境可用 `uot install-prepared` 或 `uot apply-update`；最终应用内建议由 `DesktopUpdateClient` 启动打包后的 `uot-updater install/apply`。
+7. `switch-installed` 只切换本地已安装版本；`rollback` 回到 `previous_version`，二者都支持等待旧进程和重启。
 8. 更新失败时用 `uot doctor --archive ...` 收集现场诊断包。
 
 旧版平铺安装根迁移到新架构：
@@ -613,16 +613,25 @@ uot check --settings config/settings.json --app my-tool --current-version 1.0.5
 ## SDK 使用
 
 ```python
-from update_online_tool import UpdateService
+from pathlib import Path
 
-service = UpdateService.from_settings()
-result = service.check(
-    app_id="my-tool",
-    current_version="1.0.5",
+from update_online_tool import DesktopUpdateClient, DesktopUpdateConfig, UpdateDecision
+
+client = DesktopUpdateClient.from_config(
+    DesktopUpdateConfig(
+        app_id="my-tool",
+        install_root=Path(r"D:\Tools\MyTool"),
+        settings_path=Path("config/settings.json"),
+        platform="windows",
+    )
 )
+result = client.check()
+versions = client.list_remote_versions()
+if result.decision is not UpdateDecision.NO_UPDATE:
+    client.install_remote_version(result.manifest.version, old_pid=12345, restart=True)
 ```
 
-GUI 项目负责界面、QThread 包装、进度展示和用户提示。`update_online_tool` 负责 manifest 解析、版本决策、NAS 包复制、校验、pending manifest 写入和 updater 进程启动。
+GUI 项目负责界面、QThread 包装、进度展示和用户提示。`update_online_tool` 负责 manifest 解析、版本决策、NAS 包复制、校验、pending manifest 写入、标准 updater 启动、安装、切换、回滚和重启。低层 `UpdateService` 仍可用于发布脚本、测试脚本和旧项目兼容。
 
 完整工具项目对接流程见 [docs/integration-guide.md](docs/integration-guide.md)。PyQt worker 和 pending manifest 细节见 [docs/pyqt-integration.md](docs/pyqt-integration.md)。
 
@@ -662,13 +671,15 @@ from update_online_tool.pyqt_runtime import (
 - 读取 settings 和 NAS manifest。
 - 发布并校验 `latest.json` 与 `package.zip`。
 - 从 NAS 复制升级包并进行进度回调和 SHA-256 校验。
-- 提供 PyQt pending manifest 辅助能力。
-- 装配 PyInstaller GUI release 与稳定 launcher。
-- 生成标准安装根目录、`current.json`、`releases/<version>` 和 `_launcher` 目录约定。
+- 提供桌面应用高层 `DesktopUpdateClient`。
+- 写入 pending manifest，启动标准 updater。
+- 执行安装、切换、回滚、等待旧进程退出和重启。
+- 装配 PyInstaller GUI release、稳定 launcher 与 updater sidecar。
+- 生成标准安装根目录、`current.json`、`releases/<version>`、`updater/` 和 `_launcher` 目录约定。
 
 接入方工具项目仍然负责：
 
 - 打包自己的 PyInstaller release。
-- 提供 `MyToolUpdater.exe` 或等价 updater。
-- 执行 updater 内的等待旧进程、解压、替换和重启动作。
+- 通过 UOT 装配命令携带标准 updater sidecar。
+- 配置 NAS/settings、app_id、平台和 GUI 展示。
 - 管理所有 GUI 文案、弹窗、QThread worker、重试和取消交互。

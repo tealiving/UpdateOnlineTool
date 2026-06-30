@@ -48,8 +48,7 @@ class RuntimeResult:
         }
         if self.restarted_pid is not None:
             payload["restarted_pid"] = self.restarted_pid
-        if self.elapsed_ms:
-            payload["elapsed_ms"] = self.elapsed_ms
+        payload["elapsed_ms"] = self.elapsed_ms
         if self.phase_durations_ms:
             payload["phase_durations_ms"] = dict(self.phase_durations_ms)
         return payload
@@ -174,7 +173,7 @@ def install_prepared_package(
     previous_version = _current_version(root)
     releases_root = root / "releases"
     target_release_dir = releases_root / manifest.version
-    temp_release_dir = releases_root / f".{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+    temp_release_dir = root / f".update-{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
     tracker = RuntimeStatusTracker(
         action="install_prepared",
         version=manifest.version,
@@ -226,10 +225,11 @@ def install_prepared_package(
                 ),
             )
             _extract_zip_safe(package, temp_release_dir)
-            _promote_update_sidecars(extracted_root=temp_release_dir, install_root=root)
             _ensure_release_entry(temp_release_dir, resolved_entry_name)
+            _promote_update_sidecars(extracted_root=temp_release_dir, install_root=root)
             if target_release_dir.exists():
                 shutil.rmtree(target_release_dir)
+            releases_root.mkdir(parents=True, exist_ok=True)
             temp_release_dir.replace(target_release_dir)
             if switch_current:
                 write_update_status(
@@ -358,6 +358,7 @@ def apply_pending_update(
     if not isinstance(manifest_payload, dict):
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
     manifest = UpdateManifest.from_payload(manifest_payload)
+    resolved_entry_name = _pending_entry_name(payload, entry_name)
     resolved_wait_pid = wait_pid
     if resolved_wait_pid is None:
         raw_old_pid = payload.get("old_pid")
@@ -372,7 +373,7 @@ def apply_pending_update(
         install_root=install_root,
         package_path=package_path,
         manifest=manifest,
-        entry_name=entry_name,
+        entry_name=resolved_entry_name,
         switch_current=True,
         force=force,
         dry_run=dry_run,
@@ -515,40 +516,117 @@ def switch_installed_release(
         raise wrapped from exc
 
 
-def rollback_installation(*, install_root: Path, entry_name: str = "") -> RuntimeResult:
-    """回滚到 current.json 中记录的 previous_version。"""
+def rollback_installation(
+    *,
+    install_root: Path,
+    entry_name: str = "",
+    wait_pid: int | None = None,
+    wait_timeout: float = 60.0,
+    restart: bool = False,
+) -> RuntimeResult:
+    """回滚到 current.json 中记录的 previous_version。
+
+    :param install_root: 安装根目录。
+    :param entry_name: release 入口名；为空时从 current.json 推断。
+    :param wait_pid: 回滚前等待退出的旧进程 PID。
+    :param wait_timeout: 等待旧进程退出超时时间。
+    :param restart: 回滚成功后启动当前版本。
+    :return: runtime 结果。
+    """
     root = Path(install_root)
     current_version = ""
     previous_version = ""
     release_dir = root / "releases"
+    tracker = RuntimeStatusTracker(action="rollback", version="", previous_version="")
     try:
+        current_payload = _read_json_object(root / "current.json", "current.json")
+        current_version = str(current_payload.get("version", "")).strip()
+        previous_version = str(current_payload.get("previous_version", "")).strip()
+        tracker = RuntimeStatusTracker(
+            action="rollback",
+            version=previous_version,
+            previous_version=current_version,
+        )
+        if wait_pid is not None:
+            write_update_status(
+                root,
+                tracker.status(
+                    phase="waiting_old_process",
+                    percent=10,
+                    message=f"waiting for old process {wait_pid} to exit",
+                ),
+            )
+            wait_for_process_exit(pid=wait_pid, timeout_seconds=wait_timeout)
         with runtime_lock(root, action="rollback", dry_run=False):
-            current_payload = _read_json_object(root / "current.json", "current.json")
-            current_version = str(current_payload.get("version", "")).strip()
-            previous_version = str(current_payload.get("previous_version", "")).strip()
             if not previous_version:
                 raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json has no previous_version")
+            write_update_status(
+                root,
+                tracker.status(
+                    phase="switching",
+                    percent=75,
+                    message="rolling back current release",
+                ),
+            )
             switched = _switch_installed_version(
                 install_root=root,
                 version=previous_version,
                 entry_name=entry_name,
                 use_lock=False,
             )
+            restarted_pid = None
+            message = "rolled back"
+            if restart:
+                write_update_status(
+                    root,
+                    tracker.status(
+                        phase="restarting",
+                        percent=90,
+                        message="restarting current release",
+                    ),
+                )
+                try:
+                    process = launch_current(install_root=root)
+                except OSError as exc:
+                    raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}") from exc
+                restarted_pid = process.pid
+                message = "rolled back and restarted"
+            elapsed_ms, phase_durations_ms = tracker.finish()
             result = RuntimeResult(
                 success=True,
                 action="rollback",
                 version=switched.version,
                 previous_version=current_version,
                 release_dir=switched.release_dir,
-                message="rolled back",
+                message=message,
+                restarted_pid=restarted_pid,
+                elapsed_ms=elapsed_ms,
+                phase_durations_ms=phase_durations_ms,
             )
             write_update_result(root, result)
+            write_update_status(
+                root,
+                tracker.status(
+                    phase="success",
+                    percent=100,
+                    message=result.message,
+                ),
+            )
             return result
     except UpdateError as exc:
         if previous_version:
             release_dir = root / "releases" / previous_version
         if exc.code is not UpdateErrorCode.UPDATE_LOCKED:
             write_update_result(root, _failure_result("rollback", previous_version, current_version, release_dir, exc))
+            write_update_status(
+                root,
+                tracker.status(
+                    phase="failed",
+                    percent=100,
+                    message=str(exc),
+                    error=str(exc),
+                ),
+            )
         raise
 
 
@@ -672,6 +750,18 @@ def _failure_result(
         release_dir=release_dir,
         message=str(exc),
     )
+
+
+def _pending_entry_name(payload: dict[str, object], explicit_entry_name: str) -> str:
+    """解析 pending manifest 中的 release 入口名。"""
+    explicit = str(explicit_entry_name or "").strip()
+    if explicit:
+        return explicit
+    for key in ("entry_name", "restart_executable"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _verify_package(package_path: Path, manifest: UpdateManifest) -> None:

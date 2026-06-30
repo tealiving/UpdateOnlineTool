@@ -155,6 +155,7 @@ class UpdateService:
         self.source.ensure_available()
         resolved_channel = channel or self.settings.default_channel
         versions: list[RemoteVersion] = []
+        seen_version_keys: set[tuple[str, str, str]] = set()
         for manifest_path in self._remote_version_manifest_paths(app_id, resolved_channel, platform):
             manifest = self._load_manifest(manifest_path)
             if manifest.app_id != app_id:
@@ -163,6 +164,10 @@ class UpdateService:
                 continue
             if platform and manifest.platform and manifest.platform != platform:
                 continue
+            version_key = (manifest.channel, manifest.platform or platform, manifest.version)
+            if version_key in seen_version_keys:
+                continue
+            seen_version_keys.add(version_key)
             if manifest.hidden and not include_hidden:
                 continue
             package_path = self.source.resolve_package_path(manifest.package.url)
@@ -188,22 +193,39 @@ class UpdateService:
         :param platform: 可选平台；为空时使用旧版版本路径。
         :return: 版本 manifest。
         """
+        manifest, _ = self.get_remote_manifest_with_path(
+            app_id=app_id,
+            version=version,
+            channel=channel,
+            platform=platform,
+        )
+        return manifest
+
+    def get_remote_manifest_with_path(
+        self,
+        *,
+        app_id: str,
+        version: str,
+        channel: str = "",
+        platform: str = "",
+    ) -> tuple[UpdateManifest, Path]:
+        """读取指定版本 manifest，并返回实际命中的文件路径。"""
         self.source.ensure_available()
         resolved_channel = channel or self.settings.default_channel
+        indexed_manifest = self._find_remote_manifest_by_version(
+            app_id=app_id,
+            version=version,
+            channel=resolved_channel,
+            platform=platform,
+        )
+        if indexed_manifest is not None:
+            return indexed_manifest
         manifest_path = self.source.version_manifest_path(app_id, version, platform, resolved_channel)
         if not manifest_path.is_file():
             legacy_manifest_path = self.source.version_manifest_path(app_id, version, platform)
             if legacy_manifest_path.is_file():
                 manifest_path = legacy_manifest_path
         if not manifest_path.is_file():
-            indexed_manifest = self._find_remote_manifest_by_version(
-                app_id=app_id,
-                version=version,
-                channel=resolved_channel,
-                platform=platform,
-            )
-            if indexed_manifest is not None:
-                return indexed_manifest
             raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {manifest_path}")
         manifest = self._load_manifest(manifest_path)
         self._validate_manifest_identity(
@@ -214,7 +236,7 @@ class UpdateService:
         )
         if manifest.version != version:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest version mismatch: {manifest.version}")
-        return manifest
+        return manifest, manifest_path
 
     def prepare(
         self,
@@ -348,14 +370,14 @@ class UpdateService:
         version: str,
         channel: str,
         platform: str,
-    ) -> UpdateManifest | None:
+    ) -> tuple[UpdateManifest, Path] | None:
         """从索引或扫描结果中按版本查找 manifest。
 
         :param app_id: 应用标识。
         :param version: 目标版本。
         :param channel: 发布通道。
         :param platform: 平台标识。
-        :return: 找到时返回 manifest，否则返回 None。
+        :return: 找到时返回 manifest 和路径，否则返回 None。
         """
         for path in self._remote_version_manifest_paths(app_id, channel, platform):
             manifest = self._load_manifest(path)
@@ -367,7 +389,7 @@ class UpdateService:
                 channel=channel,
                 platform=platform,
             )
-            return manifest
+            return manifest, path
         return None
 
     def _validate_manifest_identity(

@@ -62,3 +62,55 @@ def test_launcher_rejects_missing_updater(tmp_path: Path) -> None:
         )
 
     assert error.value.code is UpdateErrorCode.UPDATER_NOT_FOUND
+
+
+def test_launcher_passes_restart_executable_as_entry_name(tmp_path: Path) -> None:
+    """验证 pending 重启入口会传递给标准 updater。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None
+    """
+    updater = tmp_path / "AutomationManualUpdater"
+    pending = tmp_path / "pending-update.json"
+    updater.write_text("fake", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+        """捕获 Popen 参数。
+
+        :param args: 命令参数。
+        :param cwd: 工作目录。
+        :param close_fds: 是否关闭文件描述符。
+        :return: 假进程。
+        """
+        calls.append(args)
+
+        class Process:
+            """假进程。"""
+
+            pid = 456
+
+        return Process()
+
+    StandaloneUpdaterLauncher(updater, popen=popen).launch(
+        pending_payload={
+            "package_path": "package.zip",
+            "restart_executable": "AutomationManualStudio.app",
+            "old_pid": 123,
+        },
+        pending_manifest_path=pending,
+    )
+
+    assert calls == [
+        [
+            str(updater),
+            "apply",
+            "--pending",
+            str(pending),
+            "--restart",
+            "--entry-name",
+            "AutomationManualStudio.app",
+            "--wait-pid",
+            "123",
+        ]
+    ]

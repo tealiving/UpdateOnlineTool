@@ -30,8 +30,10 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - `endpoint_file`, normally `update-endpoint.json`
 
 2. Check project boundaries:
-   - The PyQt project owns GUI update prompts, user-facing progress, application API, tool-specific launcher/updater runtime, and version source.
-   - UOT owns NAS settings parsing, NAS read/write probing, latest/package publish and verify, package copy/download, checksum validation, pending manifest writing, updater launch, and standard PyInstaller assembly.
+   - The PyQt project owns GUI update prompts, user-facing progress, worker/thread scheduling, app id/platform/channel configuration, and version source.
+   - UOT owns NAS settings parsing, NAS read/write probing, latest/package publish and verify, package copy/download, checksum validation, DesktopUpdateClient facade, pending manifest writing, updater launch, install, local version switch, rollback, process wait/restart, current.json, update-status.json, update-result.json, and standard PyInstaller assembly.
+   - For new GUI integrations, prefer `DesktopUpdateClient.from_config(...)` and its `check()`, `list_remote_versions()`, `install_remote_version()`, `switch_installed_version()`, `rollback()`, `read_status()`, and `read_result()` methods.
+   - Do not let tool projects construct updater commands, resolve updater paths, parse `current.json`, derive entry names, or construct version `latest.json` paths. Those are UOT runtime details.
    - Avoid reintroducing generic manifest generators, generic downloaders, generic SHA verifiers, or provider-specific token logic into the PyQt tool project.
 
 3. Initialize project configuration:
@@ -63,14 +65,14 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Use publish policy flags when needed: `--allow-downgrade`, `--hidden`, `--requires-confirmation`, `--rollout-percent`, and `--data-schema-version`.
    - Use `uot list-remote --include-hidden` for operator-only version pickers; hidden versions are filtered from normal lists and normal update checks.
    - Expect `uot publish` to maintain channel `versions.json`; `list-remote` reads the index, supplements channel-scoped `v<version>` directories, and remains compatible with legacy global `<app-id>/v<version>` releases.
-   - Treat `versions.json.manifest_url` as the authoritative path for historical version pickers. GUI/project adapters should call `show-version`/`get_remote_manifest()` instead of constructing `<app>/<channel>/v<version>/latest.json` themselves.
+   - Treat `versions.json.manifest_url` as the authoritative path for historical version pickers. GUI/project adapters should call `DesktopUpdateClient.list_remote_versions()`, `install_remote_version()`, `show-version`, or `get_remote_manifest()` instead of constructing `<app>/<channel>/v<version>/latest.json` themselves.
    - Treat `prepare-version` as copy-and-verify only; use `uot install-prepared` or `uot apply-update` when the project wants UOT's standard runtime to install the selected package and change `current.json`.
-   - Use the `package_path` returned by `prepare-version`; prepared packages are stored under `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/`.
+   - Use the `package_path` and `manifest_path` returned by `prepare-version`; prepared packages are stored under `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/`.
    - Treat same-version cross-channel packages as remote storage isolation only. Local installs still use `releases/<version>` and version comparison still keys on the version number; use increasing versions for a client moving from test to stable, or explicitly use `install-prepared --force` to replace a same-version local release.
-   - Prefer packaging `uot-updater` as the final application updater executable; use `uot write-updater-spec` to generate its PyInstaller spec, then pass the built artifact to `uot assemble-pyinstaller --updater-bundle <path>`. Keep full `uot` for developer, CI, and release-operator workflows.
+   - Prefer packaging `uot-updater` as the final application updater executable; use `uot write-updater-spec` to generate its PyInstaller spec, then pass the built artifact to `uot assemble-pyinstaller --updater-bundle <path>`. UOT assembly owns the standard `updater/` sidecar in both install and update directories; project scripts should assert it exists, not hand-copy root-level updater or `_launcher/updater`. Keep full `uot` for developer, CI, and release-operator workflows.
    - Use `uot install-prepared --signature-key <key> --dry-run` before applying a package in automation; runtime uses `update.lock` to reject concurrent updates, writes `update-result.json` for successful and failed installs, and refreshes `update-status.json` with phase-level UI status.
-   - Use `--wait-pid <old_gui_pid> --wait-timeout <seconds> --restart` when the standard runtime should wait for the old GUI, install or switch the selected release, and restart the current entry.
-   - Use `uot-updater switch-installed --wait-pid <old_gui_pid> --restart` when a GUI version picker switches to an already installed local release; keep this path under the same updater process model as remote installs.
+   - Use `--wait-pid <old_gui_pid> --wait-timeout <seconds> --restart` when the standard runtime should wait for the old GUI, install, switch, or rollback the selected release, and restart the current entry.
+   - Use `DesktopUpdateClient.install_remote_version()`, `switch_installed_version()`, or `rollback()` in GUI code. Use `uot-updater switch-installed --wait-pid <old_gui_pid> --restart` and `uot-updater rollback --wait-pid <old_gui_pid> --restart` only when validating the packaged updater directly.
    - Expect `update-status.json` to include phase timing fields such as `started_at`, `phase_started_at`, `phase_elapsed_ms`, and `total_elapsed_ms`; use these for slow restart diagnostics.
    - Keep `latest.json` and `versions.json` on NAS only. Bundle `update-endpoint.json` into the app; keep `config/settings*.json` out of final user packages unless it is a deliberately generated runtime-safe settings file. Treat `update-status.json` as runtime state under the install root, not as a packaged file.
 
