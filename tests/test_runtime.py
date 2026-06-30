@@ -21,6 +21,7 @@ from update_online_tool.runtime import (
     rollback_installation,
     switch_installed_release,
 )
+from update_online_tool.signature import load_hmac_key, sign_manifest_payload
 
 
 def test_install_prepared_package_installs_switches_and_writes_result(tmp_path: Path) -> None:
@@ -51,6 +52,8 @@ def test_install_prepared_package_installs_switches_and_writes_result(tmp_path: 
     assert "total_elapsed_ms" in status_payload
     assert "elapsed_ms" in result_payload
     assert "phase_durations_ms" in result_payload
+    assert not list(install_root.glob(".update-result.json.*.tmp"))
+    assert not list(install_root.glob(".update-status.json.*.tmp"))
 
 
 def test_apply_pending_update_reads_pending_manifest(tmp_path: Path) -> None:
@@ -74,6 +77,37 @@ def test_apply_pending_update_reads_pending_manifest(tmp_path: Path) -> None:
 
     assert result.version == "1.1.0"
     assert (install_root / "releases" / "1.1.0" / "MyTool.exe").is_file()
+
+
+def test_apply_pending_update_verifies_pending_manifest_inside_runtime(tmp_path: Path) -> None:
+    """验证 apply runtime 直接校验 pending 中的 manifest，防止外部预校验后被替换。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    package_path = _write_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
+    key_path = tmp_path / "signing.key"
+    key_path.write_text("release-secret\n", encoding="utf-8")
+    manifest_payload = sign_manifest_payload(
+        _manifest(package_path, version="1.1.0").to_payload(),
+        key=load_hmac_key(key_path),
+        key_id="release",
+    )
+    manifest_payload["version"] = "9.9.9"
+    pending_path = tmp_path / "pending-update.json"
+    pending_path.write_text(
+        json.dumps(
+            {
+                "package_path": str(package_path),
+                "install_root": str(install_root),
+                "manifest": manifest_payload,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UpdateError) as error:
+        apply_pending_update(pending_path=pending_path, signature_key=key_path)
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+    assert not (install_root / "releases" / "9.9.9").exists()
 
 
 def test_rollback_installation_switches_to_previous_version(tmp_path: Path) -> None:
@@ -264,6 +298,94 @@ def test_install_prepared_package_promotes_launcher_and_updater_sidecars(tmp_pat
     assert not (release_root / "updater").exists()
     assert (install_root / "MyTool.exe").read_text(encoding="utf-8") == "launcher"
     assert (install_root / "updater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
+
+
+def test_install_prepared_package_rolls_back_sidecars_when_switch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 current.json 切换失败时恢复安装根旧 launcher/updater。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    (install_root / "MyTool.exe").write_text("old launcher", encoding="utf-8")
+    (install_root / "updater").mkdir()
+    (install_root / "updater" / "MyToolUpdater.exe").write_text("old updater", encoding="utf-8")
+    package_path = _write_package(
+        tmp_path / "package.zip",
+        {
+            "MyTool.exe": "new",
+            "_launcher/MyTool.exe": "new launcher",
+            "updater/MyToolUpdater.exe": "new updater",
+        },
+    )
+    manifest = _manifest(package_path, version="1.1.0")
+
+    def fail_switch(**kwargs: object) -> None:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "switch failed")
+
+    monkeypatch.setattr(runtime, "_switch_installed_version", fail_switch)
+
+    with pytest.raises(UpdateError):
+        install_prepared_package(install_root=install_root, package_path=package_path, manifest=manifest)
+
+    assert (install_root / "MyTool.exe").read_text(encoding="utf-8") == "old launcher"
+    assert (install_root / "updater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "old updater"
+    assert not (install_root / "releases" / "1.1.0").exists()
+
+
+def test_install_prepared_package_rolls_back_updater_only_sidecar_when_switch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证仅包含 updater sidecar 的包也会在失败时恢复旧 updater。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    (install_root / "updater").mkdir()
+    (install_root / "updater" / "MyToolUpdater.exe").write_text("old updater", encoding="utf-8")
+    package_path = _write_package(
+        tmp_path / "package.zip",
+        {
+            "MyTool.exe": "new",
+            "updater/MyToolUpdater.exe": "new updater",
+        },
+    )
+    manifest = _manifest(package_path, version="1.1.0")
+
+    def fail_switch(**kwargs: object) -> None:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "switch failed")
+
+    monkeypatch.setattr(runtime, "_switch_installed_version", fail_switch)
+
+    with pytest.raises(UpdateError):
+        install_prepared_package(install_root=install_root, package_path=package_path, manifest=manifest)
+
+    assert (install_root / "updater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "old updater"
+    assert not (install_root / "releases" / "1.1.0").exists()
+
+
+def test_install_prepared_package_restores_forced_release_when_switch_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证 force 覆盖同版本失败时恢复旧 release，避免 current.json 指向损坏目录。"""
+    install_root = _write_install_root(tmp_path, current_version="1.1.0", entry_name="MyTool.exe")
+    package_path = _write_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
+    manifest = _manifest(package_path, version="1.1.0")
+
+    def fail_switch(**kwargs: object) -> None:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "switch failed")
+
+    monkeypatch.setattr(runtime, "_switch_installed_version", fail_switch)
+
+    with pytest.raises(UpdateError):
+        install_prepared_package(
+            install_root=install_root,
+            package_path=package_path,
+            manifest=manifest,
+            force=True,
+        )
+
+    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    assert current_payload["version"] == "1.1.0"
+    assert (install_root / "releases" / "1.1.0" / "MyTool.exe").read_text(encoding="utf-8") == "current"
 
 
 def test_install_prepared_package_extracts_package_outside_releases(

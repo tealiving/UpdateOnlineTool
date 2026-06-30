@@ -43,7 +43,7 @@ uot init --nas-root D:\Nas
 
 该命令会生成两类文件：
 
-- 项目内 `update-endpoint.json`：随工具源码和打包产物一起分发，用于告诉工具走 NAS + 自定义 updater 流程。
+- 项目内 `update-endpoint.json`：随工具源码和打包产物一起分发，用于告诉工具走 NAS + UOT 标准 updater 流程。
 - 项目内 `config/settings.json`：用于保存 NAS 根路径、默认发布通道和 updater 名称；PyInstaller 打包时可由 UOT 装配命令自动复制到 `_internal/config/settings.json`。
 
 传入 `--nas-root` 时，`init` 会在写配置前自动检查 NAS 根目录：
@@ -72,7 +72,7 @@ uot init --nas-root D:\Nas --skip-nas-check
 
 接入方应用仓库应保留并打包两类配置：
 
-- `update-endpoint.json`：应用自己的更新入口声明。标准接入时应随源码提交，并随 GUI 包一起分发，供应用判断使用 NAS + UOT + 自定义 updater 流程。
+- `update-endpoint.json`：应用自己的更新入口声明。标准接入时应随源码提交，并随 GUI 包一起分发，供应用判断使用 NAS + UOT 标准 updater 流程。
 - `config/settings.json`：构建默认后端配置，包含 NAS 根路径、默认 channel、包文件名和 updater 名称。使用 `uot assemble-pyinstaller --settings config/settings.json` 时，UOT 会把它复制到运行时配置位置：Windows/Linux onedir 为 `_internal/config/settings.json`，macOS `.app` 为 `Contents/Resources/config/settings.json`。如果不用 UOT 装配，接入方自己的 PyInstaller spec 必须完成同等复制。
 
 不要把下面这些文件当作应用源码配置手工打包：
@@ -354,7 +354,7 @@ uot publish \
 uot verify --settings config/settings.json --app my-tool --signature-key config/uot-signing.pub
 ```
 
-`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会把 `signature` 写入 `latest.json` 和版本目录 manifest。`verify --signature-key`、`install-prepared --signature-key`、`apply-update --signature-key` 会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。兼容场景仍可用 `keygen --algorithm hmac-sha256`。
+`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会把 `signature` 写入 `latest.json` 和版本目录 manifest。`check`、`list-remote`、`show-version`、`prepare-version`、`verify`、`install-prepared` 和 `apply-update` 都支持 `--signature-key` 并会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。兼容场景仍可用 `keygen --algorithm hmac-sha256`。
 
 需要让 GUI 提供“选择历史版本”时，可以先列出 NAS 上已发布版本，再准备指定版本包：
 
@@ -366,14 +366,15 @@ uot prepare-version --settings config/settings.json --app my-tool --version 1.0.
 ```
 
 `uot publish` 会维护通道下的 `versions.json` 索引；`list-remote` 优先读取索引，并补充扫描该通道 `v<version>` 与旧版全局 `v<version>` 历史目录后输出 JSON。`prepare-version` 会复制并校验目标版本的包到 `updates/<app>/<channel>/<platform-or-any>/<version>/package.zip`，但不直接修改安装根或 `current.json`。调用方应使用命令输出里的 `package_path` 和 `manifest_path`。
+发布端是单机 CLI 模型，不需要部署发布服务。发布写入使用通道级 `publish.lock` 防止重复发布命令互相覆盖，并通过同目录临时文件原子替换 package、manifest、channel `latest.json` 和 `versions.json`。
 
 已准备好的 zip 包可以交给标准 updater runtime 安装。runtime 会校验包大小和 SHA-256，安全解压到 `releases/<version>`，切换 `current.json`，并写入 `update-result.json`：
 
 ```bash
 uot install-prepared \
   --install-root /Applications/MyTool \
-  --package updates/my-tool/stable/macos/1.0.4/package.zip \
-  --manifest updates/latest.json
+  --package <package_path-from-prepare-version> \
+  --manifest <manifest_path-from-prepare-version>
 
 uot apply-update --pending /Applications/MyTool/pending-update.json
 uot rollback --install-root /Applications/MyTool
@@ -397,8 +398,8 @@ uot assemble-pyinstaller \
 ```bash
 uot-updater install \
   --install-root /Applications/MyTool \
-  --package updates/package.zip \
-  --manifest updates/latest.json \
+  --package <package_path-from-prepare-version> \
+  --manifest <manifest_path-from-prepare-version> \
   --signature-key config/uot-signing.pub \
   --wait-pid 12345 \
   --wait-timeout 60 \
@@ -414,8 +415,8 @@ uot-updater launch-current --install-root /Applications/MyTool
 ```bash
 uot install-prepared \
   --install-root /Applications/MyTool \
-  --package updates/package.zip \
-  --manifest updates/latest.json \
+  --package <package_path-from-prepare-version> \
+  --manifest <manifest_path-from-prepare-version> \
   --dry-run
 ```
 
@@ -633,7 +634,7 @@ if result.decision is not UpdateDecision.NO_UPDATE:
 
 GUI 项目负责界面、QThread 包装、进度展示和用户提示。`update_online_tool` 负责 manifest 解析、版本决策、NAS 包复制、校验、pending manifest 写入、标准 updater 启动、安装、切换、回滚和重启。低层 `UpdateService` 仍可用于发布脚本、测试脚本和旧项目兼容。
 
-完整工具项目对接流程见 [docs/integration-guide.md](docs/integration-guide.md)。PyQt worker 和 pending manifest 细节见 [docs/pyqt-integration.md](docs/pyqt-integration.md)。
+完整工具项目对接流程见 [docs/integration-guide.md](docs/integration-guide.md)。版本更新、版本切换和企业级差距评审见 [docs/enterprise-update-architecture.md](docs/enterprise-update-architecture.md)。PyQt worker 和 pending manifest 细节见 [docs/pyqt-integration.md](docs/pyqt-integration.md)。
 
 ## PyQt 运行时契约
 

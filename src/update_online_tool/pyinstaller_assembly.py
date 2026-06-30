@@ -383,7 +383,6 @@ def _resolve_launcher_executable(
         bundle_dir / f"{product_name}Launcher.app" if platform == "macos" else None,
         bundle_dir / f"{product_name}.app" if platform == "macos" else None,
         bundle_dir / f"{product_name}Launcher{suffix}",
-        bundle_dir / f"AutomationManualLauncher{suffix}",
     ]
     return _first_existing(candidates, _entry_fallbacks(bundle_dir, "Launcher", suffix), f"launcher executable not found in {bundle_dir}")
 

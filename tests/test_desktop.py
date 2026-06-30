@@ -6,8 +6,13 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
+from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.downloader import CancellationToken
 from update_online_tool.desktop import DesktopUpdateClient, DesktopUpdateConfig
 from update_online_tool.settings import UpdateToolSettings
+from update_online_tool.signature import generate_hmac_key, load_hmac_key, sign_manifest_payload
 from update_online_tool.versioning import UpdateDecision
 
 
@@ -24,6 +29,25 @@ def test_desktop_client_checks_with_current_json_version(tmp_path: Path) -> None
     assert result.manifest.version == "1.1.0"
 
 
+def test_desktop_client_check_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
+    """验证桌面检查更新阶段也校验 manifest 签名。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    nas_root = tmp_path / "nas"
+    key_path = tmp_path / "signature.key"
+    key_path.write_text(generate_hmac_key(), encoding="utf-8")
+    _write_manifest(nas_root, version="1.1.0", sign_key=key_path)
+    latest_path = nas_root / "my-tool" / "stable" / "latest.json"
+    payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    payload["notes"] = "tampered"
+    latest_path.write_text(json.dumps(payload), encoding="utf-8")
+    client = _client(install_root=install_root, nas_root=nas_root, signature_key=key_path)
+
+    with pytest.raises(UpdateError) as error:
+        client.check()
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
 def test_desktop_client_lists_remote_versions(tmp_path: Path) -> None:
     """验证桌面客户端列出远端版本。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
@@ -37,6 +61,25 @@ def test_desktop_client_lists_remote_versions(tmp_path: Path) -> None:
     assert [item.version for item in versions] == ["1.1.0", "1.0.9"]
 
 
+def test_desktop_client_list_remote_versions_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
+    """验证桌面历史版本列表阶段也校验 manifest 签名。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    nas_root = tmp_path / "nas"
+    key_path = tmp_path / "signature.key"
+    key_path.write_text(generate_hmac_key(), encoding="utf-8")
+    _write_manifest(nas_root, version="1.0.9", sign_key=key_path)
+    version_manifest_path = nas_root / "my-tool" / "stable" / "v1.0.9" / "latest.json"
+    payload = json.loads(version_manifest_path.read_text(encoding="utf-8"))
+    payload["notes"] = "tampered"
+    version_manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    client = _client(install_root=install_root, nas_root=nas_root, signature_key=key_path)
+
+    with pytest.raises(UpdateError) as error:
+        client.list_remote_versions()
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
 def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) -> None:
     """验证桌面客户端准备远端包并启动标准 updater。"""
     install_root = _write_install_root(tmp_path, version="1.0.0", entry_name="MyTool.exe")
@@ -44,18 +87,39 @@ def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) 
     updater.parent.mkdir()
     updater.write_text("updater", encoding="utf-8")
     nas_root = tmp_path / "nas"
-    _write_manifest(nas_root, version="1.1.0", content=b"package")
+    key_path = tmp_path / "signature.key"
+    key_path.write_text(generate_hmac_key(), encoding="utf-8")
+    _write_manifest(nas_root, version="1.1.0", content=b"package", sign_key=key_path)
     calls: list[list[str]] = []
-    client = _client(install_root=install_root, nas_root=nas_root, popen=_popen_recorder(calls))
+    progress_calls: list[tuple[int, int]] = []
+    token = CancellationToken()
+    client = _client(
+        install_root=install_root,
+        nas_root=nas_root,
+        popen=_popen_recorder(calls),
+        signature_key=key_path,
+        wait_timeout=12.5,
+    )
 
-    result = client.install_remote_version("1.1.0", old_pid=123, restart=True, force=True)
+    result = client.install_remote_version(
+        "1.1.0",
+        old_pid=123,
+        restart=True,
+        force=True,
+        progress=lambda copied, total: progress_calls.append((copied, total)),
+        cancellation_token=token,
+    )
 
     pending_payload = json.loads(client.pending_path().read_text(encoding="utf-8"))
     assert result.started is True
     assert result.updater_pid == 456
+    assert result.pending_manifest_path == client.pending_path()
     assert pending_payload["install_root"] == str(install_root)
     assert pending_payload["restart_executable"] == "MyTool.exe"
+    assert pending_payload["signature_key"] == str(key_path)
+    assert pending_payload["wait_timeout"] == 12.5
     assert Path(pending_payload["package_path"]).read_bytes() == b"package"
+    assert progress_calls[-1] == (len(b"package"), len(b"package"))
     assert calls == [
         [
             str(updater),
@@ -64,10 +128,14 @@ def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) 
             str(client.pending_path()),
             "--restart",
             "--force",
+            "--signature-key",
+            str(key_path),
             "--entry-name",
             "MyTool.exe",
             "--wait-pid",
             "123",
+            "--wait-timeout",
+            "12.5",
         ]
     ]
 
@@ -84,6 +152,7 @@ def test_desktop_client_switches_installed_version_through_updater(tmp_path: Pat
     result = client.switch_installed_version("1.0.9", old_pid=123, restart=True)
 
     assert result.started is True
+    assert result.pending_manifest_path is None
     assert calls == [
         [
             str(updater),
@@ -113,6 +182,7 @@ def test_desktop_client_rolls_back_through_updater(tmp_path: Path) -> None:
     result = client.rollback(old_pid=123, restart=True)
 
     assert result.started is True
+    assert result.pending_manifest_path is None
     assert calls == [
         [
             str(updater),
@@ -144,16 +214,25 @@ def _client(
     install_root: Path,
     nas_root: Path,
     popen=None,  # noqa: ANN001
+    signature_key: Path | None = None,
+    wait_timeout: float = 60.0,
 ) -> DesktopUpdateClient:
     """创建测试桌面客户端。
 
     :param install_root: 测试安装根。
     :param nas_root: 测试 NAS 根目录。
     :param popen: 可注入进程启动假函数。
+    :param signature_key: 可选签名公钥。
+    :param wait_timeout: 等待旧进程退出超时。
     :return: 桌面升级客户端。
     """
     return DesktopUpdateClient(
-        DesktopUpdateConfig(app_id="my-tool", install_root=install_root),
+        DesktopUpdateConfig(
+            app_id="my-tool",
+            install_root=install_root,
+            signature_key=signature_key,
+            wait_timeout=wait_timeout,
+        ),
         settings=UpdateToolSettings(nas_root=nas_root, updater_executable_name="MyToolUpdater.exe"),
         popen=popen,
     )
@@ -186,12 +265,13 @@ def _write_install_root(tmp_path: Path, *, version: str, entry_name: str = "MyTo
     return install_root
 
 
-def _write_manifest(root: Path, *, version: str, content: bytes = b"release") -> None:
+def _write_manifest(root: Path, *, version: str, content: bytes = b"release", sign_key: Path | None = None) -> None:
     """写入测试 NAS manifest 和包。
 
     :param root: 测试 NAS 根目录。
     :param version: 版本号。
     :param content: 包体内容。
+    :param sign_key: 可选签名密钥。
     :return: None。
     """
     version_dir = root / "my-tool" / "stable" / f"v{version}"
@@ -215,6 +295,8 @@ def _write_manifest(root: Path, *, version: str, content: bytes = b"release") ->
             "sha256": hashlib.sha256(content).hexdigest(),
         },
     }
+    if sign_key is not None:
+        payload = sign_manifest_payload(payload, key=load_hmac_key(sign_key), key_id="release")
     (channel_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
     (version_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
 

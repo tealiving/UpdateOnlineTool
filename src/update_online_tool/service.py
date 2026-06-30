@@ -274,6 +274,10 @@ class UpdateService:
         install_root: Path,
         old_pid: int,
         restart_executable: str,
+        force: bool = False,
+        restart: bool = True,
+        wait_timeout: float = 60.0,
+        signature_key: Path | None = None,
     ) -> object:
         """启动独立 updater。
 
@@ -282,6 +286,10 @@ class UpdateService:
         :param install_root: 安装根目录。
         :param old_pid: 旧 GUI 进程号。
         :param restart_executable: 重启入口。
+        :param force: 目标 release 已存在时是否覆盖。
+        :param restart: 安装后是否重启。
+        :param wait_timeout: 等待旧进程退出超时时间。
+        :param signature_key: 可选 manifest 验签公钥。
         :return: 启动结果。
         """
         from update_online_tool.launcher import StandaloneUpdaterLauncher
@@ -292,8 +300,16 @@ class UpdateService:
             "install_root": str(install_root),
             "old_pid": old_pid,
             "restart_executable": restart_executable,
+            "force": bool(force),
+            "restart": bool(restart),
+            "wait_timeout": float(wait_timeout),
         }
-        updater_executable = Path(install_root) / self.settings.updater_executable_name
+        if signature_key is not None:
+            pending_payload["signature_key"] = str(Path(signature_key))
+        updater_executable = _resolve_standard_updater_executable(
+            install_root=Path(install_root),
+            updater_name=self.settings.updater_executable_name,
+        )
         return StandaloneUpdaterLauncher(updater_executable).launch(
             pending_payload=pending_payload,
             pending_manifest_path=Path(install_root) / "pending-update.json",
@@ -419,6 +435,27 @@ def _prepared_package_relative_path(manifest: UpdateManifest) -> Path:
         / _safe_path_component(manifest.version, "version")
         / _safe_path_component(filename, "package.zip")
     )
+
+
+def _resolve_standard_updater_executable(*, install_root: Path, updater_name: str) -> Path:
+    """解析标准 updater sidecar 路径。
+
+    :param install_root: 安装根目录。
+    :param updater_name: settings 中的 updater 名称。
+    :return: updater 可执行文件路径。
+    """
+    configured = Path(updater_name)
+    candidates = [
+        Path(install_root) / "updater" / configured.name,
+        Path(install_root) / "updater" / configured.stem / configured.name,
+    ]
+    if configured.suffix:
+        candidates.append(Path(install_root) / "updater" / configured.stem / configured.stem)
+    legacy_candidate = Path(install_root) / configured.name
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return legacy_candidate if legacy_candidate.is_file() else candidates[0]
 
 
 def _safe_path_component(value: str, fallback: str) -> str:

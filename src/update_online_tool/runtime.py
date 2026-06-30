@@ -20,6 +20,7 @@ from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.installed import switch_installed_version as _switch_installed_version
 from update_online_tool.locks import runtime_lock
 from update_online_tool.manifest import UpdateManifest
+from update_online_tool.signature import verify_manifest_signature_with_key_file
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,21 @@ class RuntimeStatusTracker:
         return int((now - self.started_monotonic) * 1000), dict(self.phase_durations_ms)
 
 
+@dataclass(frozen=True)
+class SidecarPromotion:
+    """sidecar 提升事务状态。
+
+    :param backup_root: sidecar 备份目录。
+    :param backups: 原始目标与备份路径。
+    :param touched_targets: 已写入的新 sidecar 目标。
+    :return: None
+    """
+
+    backup_root: Path
+    backups: list[tuple[Path, Path]]
+    touched_targets: list[Path]
+
+
 def install_prepared_package(
     *,
     install_root: Path,
@@ -174,6 +190,10 @@ def install_prepared_package(
     releases_root = root / "releases"
     target_release_dir = releases_root / manifest.version
     temp_release_dir = root / f".update-{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+    release_backup_dir: Path | None = None
+    target_release_replaced = False
+    can_rollback_release = True
+    sidecar_promotion: SidecarPromotion | None = None
     tracker = RuntimeStatusTracker(
         action="install_prepared",
         version=manifest.version,
@@ -226,11 +246,13 @@ def install_prepared_package(
             )
             _extract_zip_safe(package, temp_release_dir)
             _ensure_release_entry(temp_release_dir, resolved_entry_name)
-            _promote_update_sidecars(extracted_root=temp_release_dir, install_root=root)
             if target_release_dir.exists():
-                shutil.rmtree(target_release_dir)
+                release_backup_dir = root / f".release-backup.{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+                shutil.move(str(target_release_dir), str(release_backup_dir))
             releases_root.mkdir(parents=True, exist_ok=True)
             temp_release_dir.replace(target_release_dir)
+            target_release_replaced = True
+            sidecar_promotion = _promote_update_sidecars(extracted_root=target_release_dir, install_root=root)
             if switch_current:
                 write_update_status(
                     root,
@@ -248,6 +270,13 @@ def install_prepared_package(
                     platform=manifest.platform,
                     use_lock=False,
                 )
+                can_rollback_release = False
+            _commit_sidecar_promotion(sidecar_promotion)
+            sidecar_promotion = None
+            can_rollback_release = False
+            if release_backup_dir is not None and release_backup_dir.exists():
+                shutil.rmtree(release_backup_dir)
+                release_backup_dir = None
             result = RuntimeResult(
                 success=True,
                 action="install_prepared",
@@ -304,8 +333,19 @@ def install_prepared_package(
             )
             return result
     except Exception as exc:
+        _rollback_sidecar_promotion(sidecar_promotion)
         if temp_release_dir.exists():
             shutil.rmtree(temp_release_dir)
+        if can_rollback_release:
+            if target_release_replaced and target_release_dir.exists():
+                shutil.rmtree(target_release_dir)
+            if release_backup_dir is not None and release_backup_dir.exists():
+                target_release_dir.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(release_backup_dir), str(target_release_dir))
+                release_backup_dir = None
+        elif release_backup_dir is not None and release_backup_dir.exists():
+            shutil.rmtree(release_backup_dir)
+            release_backup_dir = None
         if isinstance(exc, UpdateError):
             if not dry_run and exc.code is not UpdateErrorCode.UPDATE_LOCKED:
                 write_update_result(
@@ -343,6 +383,7 @@ def install_prepared_package(
 def apply_pending_update(
     *,
     pending_path: Path,
+    signature_key: Path | None = None,
     entry_name: str = "",
     force: bool = False,
     dry_run: bool = False,
@@ -350,13 +391,62 @@ def apply_pending_update(
     wait_timeout: float = 60.0,
     restart: bool = False,
 ) -> RuntimeResult:
-    """读取 pending-update.json 并安装其中声明的包。"""
+    """读取 pending-update.json 并安装其中声明的包。
+
+    :param pending_path: pending-update.json 路径。
+    :param signature_key: 可选 manifest 验签公钥。
+    :param entry_name: 显式 release 入口名。
+    :param force: 目标 release 已存在时是否覆盖。
+    :param dry_run: 是否只校验计划。
+    :param wait_pid: 等待退出的旧进程 PID。
+    :param wait_timeout: 等待旧进程退出超时时间。
+    :param restart: 安装成功后是否重启当前入口。
+    :return: runtime 结果。
+    """
     payload = _read_json_object(Path(pending_path), "pending update")
+    return apply_pending_payload(
+        pending_payload=payload,
+        signature_key=signature_key,
+        entry_name=entry_name,
+        force=force,
+        dry_run=dry_run,
+        wait_pid=wait_pid,
+        wait_timeout=wait_timeout,
+        restart=restart,
+    )
+
+
+def apply_pending_payload(
+    *,
+    pending_payload: dict[str, Any],
+    signature_key: Path | None = None,
+    entry_name: str = "",
+    force: bool = False,
+    dry_run: bool = False,
+    wait_pid: int | None = None,
+    wait_timeout: float = 60.0,
+    restart: bool = False,
+) -> RuntimeResult:
+    """安装已读取并可验签的 pending payload。
+
+    :param pending_payload: pending-update.json 已读取负载。
+    :param signature_key: 可选 manifest 验签公钥。
+    :param entry_name: 显式 release 入口名。
+    :param force: 目标 release 已存在时是否覆盖。
+    :param dry_run: 是否只校验计划。
+    :param wait_pid: 等待退出的旧进程 PID。
+    :param wait_timeout: 等待旧进程退出超时时间。
+    :param restart: 安装成功后是否重启当前入口。
+    :return: runtime 结果。
+    """
+    payload = pending_payload
     package_path = _require_path(payload, "package_path")
     install_root = _require_path(payload, "install_root")
     manifest_payload = payload.get("manifest")
     if not isinstance(manifest_payload, dict):
         raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
+    if signature_key is not None:
+        verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(signature_key))
     manifest = UpdateManifest.from_payload(manifest_payload)
     resolved_entry_name = _pending_entry_name(payload, entry_name)
     resolved_wait_pid = wait_pid
@@ -720,13 +810,26 @@ def _is_windows_process_alive(pid: int) -> bool:
 def write_update_result(install_root: Path, result: RuntimeResult) -> None:
     """写入 update-result.json。"""
     path = Path(install_root) / "update-result.json"
-    path.write_text(json.dumps(result.to_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_json_atomic(path, result.to_payload())
 
 
 def write_update_status(install_root: Path, status: RuntimeStatus) -> None:
     """写入 update-status.json。"""
     path = Path(install_root) / "update-status.json"
-    path.write_text(json.dumps(status.to_payload(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _write_json_atomic(path, status.to_payload())
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    """原子写入 JSON，避免 GUI 轮询时读到半截状态文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".{path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+    try:
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
 
 
 def _utc_now_iso() -> str:
@@ -834,36 +937,102 @@ def _extract_zip_symlink(archive: zipfile.ZipFile, member: zipfile.ZipInfo, extr
     extracted_path.symlink_to(link_target)
 
 
-def _promote_update_sidecars(*, extracted_root: Path, install_root: Path) -> None:
-    """把 update 包中的 launcher/updater sidecar 提升到安装根。"""
-    launcher_sidecar = extracted_root / "_launcher"
-    if launcher_sidecar.is_dir():
-        _copy_directory_contents(launcher_sidecar, install_root)
-        shutil.rmtree(launcher_sidecar)
+def _promote_update_sidecars(*, extracted_root: Path, install_root: Path) -> SidecarPromotion | None:
+    """把 update 包中的 launcher/updater sidecar 提升到安装根。
 
-    updater_sidecar = extracted_root / "updater"
-    if updater_sidecar.is_dir():
-        target = install_root / "updater"
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(updater_sidecar, target, symlinks=True)
-        shutil.rmtree(updater_sidecar)
+    :param extracted_root: 已安装 release 目录。
+    :param install_root: 安装根目录。
+    :return: sidecar 提升事务；无 sidecar 时返回 None。
+    """
+    backup_root = install_root / f".sidecar-backup.{os.getpid()}.{uuid4().hex}.tmp"
+    promotion = SidecarPromotion(backup_root=backup_root, backups=[], touched_targets=[])
+    try:
+        changed = False
+        launcher_sidecar = extracted_root / "_launcher"
+        if launcher_sidecar.is_dir():
+            for item in launcher_sidecar.iterdir():
+                _copy_sidecar_item(item, install_root / item.name, promotion, backup_name=Path("launcher") / item.name)
+                changed = True
+            shutil.rmtree(launcher_sidecar)
+
+        updater_sidecar = extracted_root / "updater"
+        if updater_sidecar.is_dir():
+            _copy_sidecar_item(updater_sidecar, install_root / "updater", promotion, backup_name=Path("updater"))
+            changed = True
+            shutil.rmtree(updater_sidecar)
+
+        if not changed:
+            _remove_empty_backup_root(backup_root)
+            return None
+        return promotion
+    except Exception:
+        _rollback_sidecar_promotion(promotion)
+        raise
 
 
-def _copy_directory_contents(source: Path, target_root: Path) -> None:
-    """复制目录内容到目标根，覆盖同名文件或目录。"""
-    target_root.mkdir(parents=True, exist_ok=True)
-    for item in source.iterdir():
-        target = target_root / item.name
+def _copy_sidecar_item(source: Path, target: Path, promotion: SidecarPromotion, *, backup_name: Path) -> None:
+    """复制一个 sidecar 项并备份被覆盖目标。
+
+    :param source: sidecar 来源路径。
+    :param target: 安装根目标路径。
+    :param promotion: sidecar 提升事务。
+    :param backup_name: 备份相对路径。
+    :return: None
+    """
+    if target.exists():
+        backup_path = promotion.backup_root / backup_name
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(target), str(backup_path))
+        promotion.backups.append((target, backup_path))
+    if source.is_dir() and not source.is_symlink():
+        shutil.copytree(source, target, symlinks=True)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target, follow_symlinks=False)
+    promotion.touched_targets.append(target)
+
+
+def _commit_sidecar_promotion(promotion: SidecarPromotion | None) -> None:
+    """提交 sidecar 提升并删除备份。
+
+    :param promotion: sidecar 提升事务。
+    :return: None
+    """
+    if promotion is None:
+        return
+    if promotion.backup_root.exists():
+        shutil.rmtree(promotion.backup_root)
+
+
+def _rollback_sidecar_promotion(promotion: SidecarPromotion | None) -> None:
+    """回滚 sidecar 提升。
+
+    :param promotion: sidecar 提升事务。
+    :return: None
+    """
+    if promotion is None:
+        return
+    for target in reversed(promotion.touched_targets):
         if target.exists():
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target)
             else:
                 target.unlink()
-        if item.is_dir() and not item.is_symlink():
-            shutil.copytree(item, target, symlinks=True)
-        else:
-            shutil.copy2(item, target, follow_symlinks=False)
+    for target, backup in reversed(promotion.backups):
+        if backup.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(backup), str(target))
+    _remove_empty_backup_root(promotion.backup_root)
+
+
+def _remove_empty_backup_root(backup_root: Path) -> None:
+    """删除 sidecar 备份根目录。
+
+    :param backup_root: 备份根目录。
+    :return: None
+    """
+    if backup_root.exists():
+        shutil.rmtree(backup_root)
 
 
 def _verify_zip_plan(package_path: Path, entry_name: str) -> None:

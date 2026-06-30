@@ -59,6 +59,9 @@ Keep the workflow project-agnostic. Do not hardcode one repository's app id, pro
    - Publish the package to NAS with `uot publish`; include `--platform <platform>` for multi-platform projects and `--notes-file <path>` for long release notes.
    - Verify NAS metadata and package integrity with `uot verify`; include the same platform when used.
    - Use `uot keygen --public-output <public_key>` once per release trust domain, `uot publish --sign-key <private_key>`, and `uot verify --signature-key <public_key>` when manifest tamper detection is required.
+   - When `DesktopUpdateConfig.signature_key` is configured, `DesktopUpdateClient` validates manifest signatures during `check()`, `list_remote_versions()`, and `install_remote_version()`; GUI code should surface the resulting UOT error instead of displaying untrusted release notes.
+   - For operator CLI workflows, pass `--signature-key <public_key>` to `check`, `list-remote`, `show-version`, and `prepare-version` when reading signed releases.
+   - Treat publishing as a single-machine CLI workflow, not a deployed service. Expect `publish` to use channel-scoped `publish.lock` and same-directory temporary files before replacing package, version manifest, channel `latest.json`, and `versions.json`.
    - Check that NAS contains channel `latest.json`, channel `versions.json`, and channel-scoped `v<version>/package.zip`, under the platform subdirectory when platform is set.
    - Treat `notes` as the per-version release summary and `versions.json` as the historical source for GUI/SDK version pickers; use `list-remote` or `show-version` to display it.
    - Use `uot list-remote`, `uot show-version`, and `uot prepare-version` when the GUI needs a historical version picker.

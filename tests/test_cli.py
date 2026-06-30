@@ -73,6 +73,38 @@ def test_cli_publish_writes_package_and_latest_json(tmp_path: Path) -> None:
     assert payload["package"]["sha256"] == hashlib.sha256(b"release").hexdigest()
     assert index_payload["versions"][0]["version"] == "1.0.6"
     assert index_payload["versions"][0]["manifest_url"] == "automation-manual-studio/stable/v1.0.6/latest.json"
+    assert not list(nas_root.rglob("*.tmp"))
+    assert not (nas_root / "automation-manual-studio" / "stable" / "publish.lock").exists()
+
+
+def test_cli_publish_rejects_existing_publish_lock(tmp_path: Path) -> None:
+    """验证 publish.lock 存在时拒绝并发发布且不复制包。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    lock_path = nas_root / "automation-manual-studio" / "stable" / "publish.lock"
+    package.write_bytes(b"release")
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text('{"pid": 1}\n', encoding="utf-8")
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+        ]
+    )
+
+    assert exit_code == 1
+    assert lock_path.is_file()
+    assert not (nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip").exists()
 
 
 def test_cli_publish_can_read_notes_from_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -430,6 +462,124 @@ def test_cli_verify_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
     )
 
     assert exit_code == 1
+
+
+def test_cli_check_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
+    """验证 check --signature-key 会拒绝被篡改的 latest manifest。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    key_path = tmp_path / "signing.key"
+    package.write_bytes(b"release")
+    _settings(settings_path, nas_root)
+    assert main(["keygen", "--output", str(key_path)]) == 0
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--package",
+                str(package),
+                "--sign-key",
+                str(key_path),
+            ]
+        )
+        == 0
+    )
+    latest_path = nas_root / "automation-manual-studio" / "stable" / "latest.json"
+    payload = json.loads(latest_path.read_text(encoding="utf-8"))
+    payload["notes"] = "tampered"
+    latest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "check",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+            "--current-version",
+            "1.0.0",
+            "--signature-key",
+            str(key_path),
+        ]
+    )
+
+    assert exit_code == 1
+
+
+def test_cli_remote_version_commands_reject_tampered_signed_manifest(tmp_path: Path) -> None:
+    """验证 list/show/prepare 在指定签名公钥时都会拒绝被篡改的历史 manifest。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    key_path = tmp_path / "signing.key"
+    package.write_bytes(b"release")
+    _settings(settings_path, nas_root)
+    assert main(["keygen", "--output", str(key_path)]) == 0
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--package",
+                str(package),
+                "--sign-key",
+                str(key_path),
+            ]
+        )
+        == 0
+    )
+    version_manifest_path = nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "latest.json"
+    payload = json.loads(version_manifest_path.read_text(encoding="utf-8"))
+    payload["notes"] = "tampered"
+    version_manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert main(["list-remote", "--settings", str(settings_path), "--app", "automation-manual-studio", "--signature-key", str(key_path)]) == 1
+    assert (
+        main(
+            [
+                "show-version",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--signature-key",
+                str(key_path),
+            ]
+        )
+        == 1
+    )
+    assert (
+        main(
+            [
+                "prepare-version",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--download-dir",
+                str(tmp_path / "downloads"),
+                "--signature-key",
+                str(key_path),
+            ]
+        )
+        == 1
+    )
 
 
 def test_cli_verify_accepts_published_release(tmp_path: Path) -> None:

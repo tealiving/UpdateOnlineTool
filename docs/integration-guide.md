@@ -59,7 +59,7 @@ uot init --nas-root D:\Nas
 
 该命令会写入：
 
-- `update-endpoint.json`：放在工具项目内，随源码和打包产物分发，用于声明当前工具使用 NAS + `update-online-tool` + 自定义 updater。
+- `update-endpoint.json`：放在工具项目内，随源码和打包产物分发，用于声明当前工具使用 NAS + `update-online-tool` 标准 updater。
 - `config/settings.json`：放在工具项目内，保存 NAS 根路径等后端配置；打包时由 UOT 装配命令复制到 PyInstaller `_internal/config/settings.json`。
 
 打包时按文件归属处理：
@@ -225,9 +225,9 @@ dist/
 uot init
 ```
 
-默认输出 NAS SDK endpoint，适用于首版 PyQt + NAS + 自定义 updater 流程。需要生成项目内 NAS settings 时增加 `--nas-root`；需要写入用户级 settings 时同时增加 `--user-settings`。需要覆盖自动推导的应用标识时增加 `--app`。已存在文件时不会覆盖；确需覆盖时增加 `--force`。
+默认输出 NAS SDK endpoint，适用于 PyQt + NAS + UOT 标准 updater 流程。需要生成项目内 NAS settings 时增加 `--nas-root`；需要写入用户级 settings 时同时增加 `--user-settings`。需要覆盖自动推导的应用标识时增加 `--app`。已存在文件时不会覆盖；确需覆盖时增加 `--force`。
 
-发布端可以只使用 `uot`，不需要导入 Python 代码。
+发布端是单机 CLI 模型：发布人员在发布机上运行 `uot`，直接写 NAS 发布根；不需要部署发布服务或后台 worker。
 
 发布升级包：
 
@@ -271,7 +271,7 @@ uot publish --settings config\settings.json --app my-tool --version 1.0.7 --pack
 uot verify --settings config\settings.json --app my-tool --signature-key config\uot-signing.pub
 ```
 
-`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会把 `signature` 写入 `latest.json` 和版本目录 manifest。`verify --signature-key`、`install-prepared --signature-key`、`apply-update --signature-key` 会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。兼容场景仍可用 `keygen --algorithm hmac-sha256`。
+`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会把 `signature` 写入 `latest.json` 和版本目录 manifest。`check`、`list-remote`、`show-version`、`prepare-version`、`verify`、`install-prepared` 和 `apply-update` 都支持 `--signature-key` 并会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。兼容场景仍可用 `keygen --algorithm hmac-sha256`。
 
 列出和准备历史版本：
 
@@ -285,7 +285,7 @@ uot prepare-version --settings config\settings.json --app my-tool --version 1.0.
 `prepare-version` 只复制并校验包到 `updates\<app>\<channel>\<platform-or-any>\<version>\package.zip`，不直接改安装根或 `current.json`。调用方应使用命令输出里的 `package_path` 和 `manifest_path`。已准备包可以交给标准 runtime 安装：
 
 ```powershell
-uot install-prepared --install-root D:\Tools\MyTool --package updates\my-tool\stable\windows\1.0.4\package.zip --manifest updates\latest.json
+uot install-prepared --install-root D:\Tools\MyTool --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version>
 uot apply-update --pending D:\Tools\MyTool\pending-update.json
 uot rollback --install-root D:\Tools\MyTool
 ```
@@ -306,7 +306,7 @@ uot assemble-pyinstaller `
 `--updater-bundle` 可以是 PyInstaller onefile 文件或 onedir 目录，装配后会进入安装根 `updater\` 和升级目录 `updater\`。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater\`；接入方脚本不应再手工复制根目录 updater 或 `_launcher\updater`。升级 zip 不应预置 `latest.json`、`pending-update.json`、`update-result.json` 或 `update-status.json`。
 
 ```powershell
-uot-updater install --install-root D:\Tools\MyTool --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --wait-pid 12345 --wait-timeout 60 --restart
+uot-updater install --install-root D:\Tools\MyTool --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version> --signature-key config\uot-signing.pub --wait-pid 12345 --wait-timeout 60 --restart
 uot-updater apply --pending D:\Tools\MyTool\pending-update.json --signature-key config\uot-signing.pub --restart
 uot-updater rollback --install-root D:\Tools\MyTool
 uot-updater launch-current --install-root D:\Tools\MyTool
@@ -315,13 +315,14 @@ uot-updater launch-current --install-root D:\Tools\MyTool
 上线前可先预检：
 
 ```powershell
-uot install-prepared --install-root D:\Tools\MyTool --package updates\package.zip --manifest updates\latest.json --dry-run
+uot install-prepared --install-root D:\Tools\MyTool --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version> --dry-run
 ```
 
 `apply-update` 读取 pending manifest 中的 `package_path`、`install_root` 和 `manifest`。runtime 会校验包大小和 SHA-256，安全解压到 `releases\<version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 执行时会创建 `update.lock` 防止同一安装根并发更新；失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段包括 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`；`percent` 是阶段级 UI 提示，不是下载字节进度。`--wait-pid` 用于等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT` 并提示用户关闭应用；`--restart` 会切换后启动当前版本并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度应由 updater 自己显示窗口，或由外部进程轮询 `update-status.json`。新 GUI 启动时可读取该文件展示上次更新结果。如果项目需要完全自定义进程退出和重启，也可以只使用 `prepare-version` 和 SDK。
 
 企业级执行链路：构建 update zip，`publish --sign-key` 写入 NAS，客户端 `check` 发现最新版本，历史版本选择器用 `list-remote/show-version/prepare-version`，runtime 通过 `install-prepared --signature-key` 或 `apply-update --signature-key` 安装，已安装版本通过 `switch-installed` 切换，失败时用 `rollback` 回到 `previous_version`。
 `uot publish` 会维护通道下的 `versions.json` 索引，并把版本包写入 `<app-id>/<channel>/v<version>/`。`list-remote` 优先读取该索引，并补充扫描通道版本目录和旧版 `<app-id>/v<version>/` 历史目录。远端允许同一版本号在不同 channel 存放不同包，但安装根仍以 `releases\<version>` 作为本地版本目录；需要让同一客户端从测试包升级到正式包时，正式包应使用递增版本号，或显式使用 `install-prepared --force` 覆盖同版本 release。
+发布写入使用通道级 `publish.lock` 防止重复发布命令互相覆盖，并通过同目录临时文件原子替换 package、manifest、channel `latest.json` 和 `versions.json`。它是单机 CLI 发布保护，不是服务端部署机制。
 
 现场排障可收集诊断报告和诊断包：
 

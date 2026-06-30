@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from update_online_tool.downloader import PreparedPackage
+from update_online_tool.downloader import CancellationToken, PreparedPackage
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.installed import InstalledVersion, list_installed_versions
 from update_online_tool.launcher import LaunchResult, PopenFactory, StandaloneUpdaterLauncher
 from update_online_tool.manifest import UpdateManifest
-from update_online_tool.service import CheckUpdateResult, RemoteVersion, UpdateService
+from update_online_tool.service import CheckUpdateResult, ProgressCallback, RemoteVersion, UpdateService
 from update_online_tool.settings import UpdateToolSettings
 from update_online_tool.signature import verify_manifest_signature_with_key_file
 
@@ -92,13 +92,15 @@ class DesktopUpdateClient:
         :param skipped_version: 用户已跳过版本。
         :return: 检查结果。
         """
-        return self.service.check(
+        result = self.service.check(
             app_id=self.config.app_id,
             current_version=self.current_version(),
             channel=self._channel(),
             platform=self.config.platform,
             skipped_version=skipped_version,
         )
+        self._verify_manifest_if_needed(result.manifest)
+        return result
 
     def list_remote_versions(self, *, include_hidden: bool = False) -> list[RemoteVersion]:
         """列出远端历史版本。
@@ -106,12 +108,15 @@ class DesktopUpdateClient:
         :param include_hidden: 是否包含隐藏版本。
         :return: 远端版本列表。
         """
-        return self.service.list_remote_versions(
+        versions = self.service.list_remote_versions(
             app_id=self.config.app_id,
             channel=self._channel(),
             platform=self.config.platform,
             include_hidden=include_hidden,
         )
+        for version in versions:
+            self._verify_manifest_if_needed(version.manifest)
+        return versions
 
     def install_remote_version(
         self,
@@ -120,6 +125,8 @@ class DesktopUpdateClient:
         old_pid: int | None = None,
         restart: bool = True,
         force: bool = False,
+        progress: ProgressCallback | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> LaunchResult:
         """准备并启动标准 updater 安装远端版本。
 
@@ -127,6 +134,8 @@ class DesktopUpdateClient:
         :param old_pid: 旧 GUI 进程号。
         :param restart: 安装后是否重启。
         :param force: 目标 release 已存在时是否覆盖。
+        :param progress: 下载进度回调。
+        :param cancellation_token: 下载取消令牌。
         :return: updater 启动结果。
         """
         manifest, _ = self.service.get_remote_manifest_with_path(
@@ -136,7 +145,12 @@ class DesktopUpdateClient:
             platform=self.config.platform,
         )
         self._verify_manifest_if_needed(manifest)
-        prepared = self.service.prepare(manifest, self._download_dir())
+        prepared = self.service.prepare(
+            manifest,
+            self._download_dir(),
+            progress=progress,
+            cancellation_token=cancellation_token,
+        )
         pending_payload = self._pending_payload(
             prepared=prepared,
             manifest=manifest,
@@ -179,7 +193,7 @@ class DesktopUpdateClient:
             process = self._popen(command, cwd=str(self._updater_executable().parent), close_fds=True)
         except OSError as exc:
             raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {self._updater_executable()}") from exc
-        return LaunchResult(started=True, updater_pid=getattr(process, "pid", None), pending_manifest_path=self.pending_path())
+        return LaunchResult(started=True, updater_pid=getattr(process, "pid", None), pending_manifest_path=None)
 
     def rollback(self, *, old_pid: int | None = None, restart: bool = True) -> LaunchResult:
         """启动标准 updater 回滚到 previous_version。
@@ -202,7 +216,7 @@ class DesktopUpdateClient:
             process = self._popen(command, cwd=str(self._updater_executable().parent), close_fds=True)
         except OSError as exc:
             raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {self._updater_executable()}") from exc
-        return LaunchResult(started=True, updater_pid=getattr(process, "pid", None), pending_manifest_path=self.pending_path())
+        return LaunchResult(started=True, updater_pid=getattr(process, "pid", None), pending_manifest_path=None)
 
     def read_status(self) -> dict[str, Any]:
         """读取 update-status.json。
@@ -337,6 +351,9 @@ class DesktopUpdateClient:
         }
         if old_pid is not None:
             payload["old_pid"] = int(old_pid)
+            payload["wait_timeout"] = float(self.config.wait_timeout)
+        if self.config.signature_key is not None:
+            payload["signature_key"] = str(Path(self.config.signature_key))
         return payload
 
     def _verify_manifest_if_needed(self, manifest: UpdateManifest) -> None:

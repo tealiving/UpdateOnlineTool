@@ -112,14 +112,9 @@ def _install(args: argparse.Namespace) -> int:
 
 def _apply(args: argparse.Namespace) -> int:
     """应用 pending-update.json。"""
-    if args.signature_key is not None:
-        pending_payload = _read_json_object(Path(args.pending), "pending update")
-        manifest_payload = pending_payload.get("manifest")
-        if not isinstance(manifest_payload, dict):
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
-        verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(args.signature_key))
     result = apply_pending_update(
         pending_path=Path(args.pending),
+        signature_key=Path(args.signature_key) if args.signature_key is not None else None,
         entry_name=args.entry_name,
         force=bool(args.force),
         dry_run=bool(args.dry_run),

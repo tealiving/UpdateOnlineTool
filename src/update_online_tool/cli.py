@@ -8,6 +8,8 @@ import json
 import os
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -167,6 +169,7 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     check.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
     check.add_argument("--skipped-version", default="", help="Skipped version.")
+    check.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
 
     list_remote = subparsers.add_parser("list-remote", help="List published versions on the NAS release root.")
     _add_settings_arg(list_remote)
@@ -174,6 +177,7 @@ def _build_parser() -> argparse.ArgumentParser:
     list_remote.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     list_remote.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
     list_remote.add_argument("--include-hidden", action="store_true", help="Include hidden versions.")
+    list_remote.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signatures.")
 
     show_version = subparsers.add_parser("show-version", help="Print one published version manifest.")
     _add_settings_arg(show_version)
@@ -181,6 +185,7 @@ def _build_parser() -> argparse.ArgumentParser:
     show_version.add_argument("--version", required=True, help="Release version.")
     show_version.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     show_version.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+    show_version.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
 
     prepare_version = subparsers.add_parser("prepare-version", help="Copy and verify one published version package.")
     _add_settings_arg(prepare_version)
@@ -189,6 +194,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_version.add_argument("--download-dir", required=True, type=Path, help="Local package download directory.")
     prepare_version.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     prepare_version.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+    prepare_version.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
 
     list_installed = subparsers.add_parser("list-installed", help="List releases under an assembled install root.")
     list_installed.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
@@ -488,48 +494,48 @@ def _publish(args: argparse.Namespace) -> int:
         raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {source_package_path}")
     notes = _resolve_publish_notes(args)
     target_package_path = source.package_path(args.app, args.version, settings.package_filename, platform, channel)
-    target_package_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_package_path, target_package_path)
-    package_size = target_package_path.stat().st_size
-    package_sha256 = _sha256_of(target_package_path)
-    relative_package_url = _package_url(args.app, args.version, settings.package_filename, platform, channel)
-    published_at = args.published_at.strip() or datetime.now(timezone.utc).isoformat()
-    payload: dict[str, object] = {
-        "schema_version": 2,
-        "app_id": args.app,
-        "channel": channel,
-        "version": args.version,
-        "mandatory": bool(args.mandatory),
-        "min_supported_version": min_supported_version,
-        "published_at": published_at,
-        "notes": notes,
-        "package": {
-            "url": relative_package_url,
-            "size": package_size,
-            "sha256": package_sha256,
-        },
-    }
-    if platform:
-        payload["platform"] = platform
-    payload.update(_manifest_policy_payload(args))
-    manifest = UpdateManifest.from_payload(payload)
-    manifest_payload = manifest.to_payload()
-    if args.sign_key is not None:
-        manifest_payload = sign_manifest_payload_with_key_file(
-            manifest_payload,
-            key_path=Path(args.sign_key),
-            key_id=args.key_id,
+    with _publish_lock(source=source, app_id=args.app, channel=channel, platform=platform):
+        _copy_file_atomic(source_package_path, target_package_path)
+        package_size = target_package_path.stat().st_size
+        package_sha256 = _sha256_of(target_package_path)
+        relative_package_url = _package_url(args.app, args.version, settings.package_filename, platform, channel)
+        published_at = args.published_at.strip() or datetime.now(timezone.utc).isoformat()
+        payload: dict[str, object] = {
+            "schema_version": 2,
+            "app_id": args.app,
+            "channel": channel,
+            "version": args.version,
+            "mandatory": bool(args.mandatory),
+            "min_supported_version": min_supported_version,
+            "published_at": published_at,
+            "notes": notes,
+            "package": {
+                "url": relative_package_url,
+                "size": package_size,
+                "sha256": package_sha256,
+            },
+        }
+        if platform:
+            payload["platform"] = platform
+        payload.update(_manifest_policy_payload(args))
+        manifest = UpdateManifest.from_payload(payload)
+        manifest_payload = manifest.to_payload()
+        if args.sign_key is not None:
+            manifest_payload = sign_manifest_payload_with_key_file(
+                manifest_payload,
+                key_path=Path(args.sign_key),
+                key_id=args.key_id,
+            )
+        manifest = UpdateManifest.from_payload(manifest_payload)
+        _write_json(source.version_dir(args.app, args.version, platform, channel) / "latest.json", manifest_payload)
+        _write_json(source.manifest_path(args.app, channel, platform), manifest_payload)
+        _update_versions_index(
+            source=source,
+            app_id=args.app,
+            channel=channel,
+            platform=platform,
+            manifest=manifest,
         )
-    manifest = UpdateManifest.from_payload(manifest_payload)
-    _write_json(source.version_dir(args.app, args.version, platform, channel) / "latest.json", manifest_payload)
-    _write_json(source.manifest_path(args.app, channel, platform), manifest_payload)
-    _update_versions_index(
-        source=source,
-        app_id=args.app,
-        channel=channel,
-        platform=platform,
-        manifest=manifest,
-    )
     print(f"Published {args.app} v{args.version} to {settings.nas_root}")
     return 0
 
@@ -587,6 +593,7 @@ def _check(args: argparse.Namespace) -> int:
         platform=platform,
         skipped_version=args.skipped_version or None,
     )
+    _verify_manifest_payload_if_requested(result.manifest.to_payload(), args.signature_key)
     print(f"{result.decision.value}: {result.manifest.version}")
     return 0
 
@@ -602,6 +609,9 @@ def _list_remote(args: argparse.Namespace) -> int:
         platform=platform,
         include_hidden=bool(args.include_hidden),
     )
+    if args.signature_key is not None:
+        for item in versions:
+            _verify_manifest_payload_if_requested(item.manifest.to_payload(), args.signature_key)
     payload = {
         "app_id": args.app,
         "channel": channel,
@@ -682,6 +692,7 @@ def _show_version(args: argparse.Namespace) -> int:
         channel=args.channel or settings.default_channel,
         platform=platform,
     )
+    _verify_manifest_payload_if_requested(manifest.to_payload(), args.signature_key)
     print(json.dumps(manifest.to_payload(), ensure_ascii=False, indent=2))
     return 0
 
@@ -697,6 +708,7 @@ def _prepare_version(args: argparse.Namespace) -> int:
         channel=args.channel or settings.default_channel,
         platform=platform,
     )
+    _verify_manifest_payload_if_requested(manifest.to_payload(), args.signature_key)
     prepared = service.prepare(manifest, Path(args.download_dir))
     payload = {
         "app_id": manifest.app_id,
@@ -813,10 +825,9 @@ def _install_prepared(args: argparse.Namespace) -> int:
 
 def _apply_update(args: argparse.Namespace) -> int:
     """应用 pending-update.json。"""
-    if args.signature_key is not None:
-        _verify_pending_manifest_signature(Path(args.pending), Path(args.signature_key))
     result = apply_pending_update(
         pending_path=Path(args.pending),
+        signature_key=Path(args.signature_key) if args.signature_key is not None else None,
         entry_name=args.entry_name,
         force=bool(args.force),
         dry_run=bool(args.dry_run),
@@ -937,19 +948,6 @@ def _load_manifest_payload(path: Path) -> dict[str, object]:
     return payload
 
 
-def _verify_pending_manifest_signature(pending_path: Path, signature_key: Path) -> None:
-    """校验 pending-update.json 内 manifest 签名。"""
-    if not pending_path.is_file():
-        raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"pending update not found: {pending_path}")
-    payload = json.loads(pending_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending update must be a JSON object")
-    manifest_payload = payload.get("manifest")
-    if not isinstance(manifest_payload, dict):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
-    verify_manifest_signature_with_key_file(manifest_payload, key_path=signature_key)
-
-
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     """写入稳定格式 JSON。
 
@@ -957,8 +955,77 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     :param payload: JSON 字典。
     :return: None
     """
+    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    """原子写入文本文件。
+
+    :param path: 目标路径。
+    :param content: 文件内容。
+    :return: None
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path = path.parent / f".{path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
+def _copy_file_atomic(source_path: Path, target_path: Path) -> None:
+    """复制文件到同目录临时文件后原子替换目标。
+
+    :param source_path: 源文件。
+    :param target_path: 目标文件。
+    :return: None
+    """
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.parent / f".{target_path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+    try:
+        shutil.copy2(source_path, temp_path)
+        temp_path.replace(target_path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
+@contextmanager
+def _publish_lock(*, source: NasReleaseSource, app_id: str, channel: str, platform: str) -> Iterator[None]:
+    """发布锁，防止同一 app/channel/platform 并发写 latest 和 versions index。
+
+    :param source: NAS 发布源。
+    :param app_id: 应用标识。
+    :param channel: 发布通道。
+    :param platform: 平台。
+    :return: None。
+    """
+    lock_root = source.versions_index_path(app_id, channel, platform).parent
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_root / "publish.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise UpdateError(UpdateErrorCode.UPDATE_LOCKED, f"publish lock exists: {lock_path}") from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
+            lock_file.write(json.dumps({"pid": os.getpid(), "app_id": app_id, "channel": channel, "platform": platform}, ensure_ascii=False) + "\n")
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            return
+
+
+def _verify_manifest_payload_if_requested(payload: dict[str, object], signature_key: Path | None) -> None:
+    """按需校验 manifest payload 签名。"""
+    if signature_key is not None:
+        verify_manifest_signature_with_key_file(payload, key_path=Path(signature_key))
 
 
 def _update_versions_index(

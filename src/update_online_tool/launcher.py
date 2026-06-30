@@ -20,13 +20,13 @@ class LaunchResult:
 
     :param started: 是否已启动。
     :param updater_pid: updater 进程号。
-    :param pending_manifest_path: pending manifest 路径。
+    :param pending_manifest_path: pending manifest 路径；非 pending 命令为空。
     :return: None
     """
 
     started: bool
     updater_pid: int | None
-    pending_manifest_path: Path
+    pending_manifest_path: Path | None
 
 
 class StandaloneUpdaterLauncher:
@@ -68,12 +68,18 @@ class StandaloneUpdaterLauncher:
             command.append("--restart")
         if _coerce_bool(pending_payload.get("force"), default=False):
             command.append("--force")
+        signature_key = _coerce_non_empty_string(pending_payload.get("signature_key"))
+        if signature_key is not None:
+            command.extend(["--signature-key", signature_key])
         restart_executable = _coerce_non_empty_string(pending_payload.get("restart_executable"))
         if restart_executable is not None:
             command.extend(["--entry-name", restart_executable])
         old_pid = _coerce_positive_int(pending_payload.get("old_pid"))
         if old_pid is not None:
             command.extend(["--wait-pid", str(old_pid)])
+            wait_timeout = _coerce_float(pending_payload.get("wait_timeout"))
+            if wait_timeout is not None:
+                command.extend(["--wait-timeout", str(wait_timeout)])
         try:
             process = self._popen(
                 command,
@@ -125,3 +131,16 @@ def _coerce_bool(value: object, *, default: bool) -> bool:
     :return: 解析后的布尔值。
     """
     return value if isinstance(value, bool) else default
+
+
+def _coerce_float(value: object) -> float | None:
+    """解析非负浮点数。
+
+    :param value: 待解析值。
+    :return: 非负浮点数；无效时返回 None。
+    """
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None

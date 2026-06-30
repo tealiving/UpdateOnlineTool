@@ -180,13 +180,13 @@ uot publish --settings <settings_file> --app <app_id> --version <target_version>
 uot verify --settings <settings_file> --app <app_id> --signature-key config\uot-signing.pub
 ```
 
-`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会写入 manifest `signature`；`verify --signature-key`、`install-prepared --signature-key` 和 `apply-update --signature-key` 会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。
+`keygen` 默认生成 Ed25519 私钥，并可通过 `--public-output` 导出客户端验证用公钥。`--sign-key` 会写入 manifest `signature`；`check`、`list-remote`、`show-version`、`prepare-version`、`verify`、`install-prepared` 和 `apply-update` 都支持 `--signature-key` 并会拒绝被篡改的 manifest。生产环境只应把公钥打进客户端，私钥留在发布机或 CI 密钥库。
 
 `prepare-version` 只复制并校验指定版本包到 `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/package.zip`，不直接修改安装根或 `current.json`。后续命令应使用 JSON 输出里的 `package_path` 和 `manifest_path`。如果使用 UOT 标准 runtime，可以继续执行：
 
 ```powershell
-uot install-prepared --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --dry-run
-uot install-prepared --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub
+uot install-prepared --install-root <install_root> --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version> --signature-key config\uot-signing.pub --dry-run
+uot install-prepared --install-root <install_root> --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version> --signature-key config\uot-signing.pub
 uot apply-update --pending <install_root>\pending-update.json --signature-key config\uot-signing.pub
 uot rollback --install-root <install_root> --wait-pid <old_gui_pid> --wait-timeout 60 --restart
 ```
@@ -204,7 +204,7 @@ uot assemble-pyinstaller --version <target_version> --product-name <product_name
 `--updater-bundle` 可以指向 onefile 文件或 onedir 目录；装配后会复制到安装根 `updater/` 和升级目录 `updater/`。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater/`；接入方脚本不应再手工复制根目录 updater 或 `_launcher/updater`。升级 zip 不应预置远端 `latest.json` 或运行态 `pending-update.json`、`update-result.json`、`update-status.json`。
 
 ```powershell
-uot-updater install --install-root <install_root> --package updates\package.zip --manifest updates\latest.json --signature-key config\uot-signing.pub --wait-pid <old_gui_pid> --wait-timeout 60 --restart
+uot-updater install --install-root <install_root> --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version> --signature-key config\uot-signing.pub --wait-pid <old_gui_pid> --wait-timeout 60 --restart
 uot-updater apply --pending <install_root>\pending-update.json --signature-key config\uot-signing.pub --restart
 uot-updater rollback --install-root <install_root> --wait-pid <old_gui_pid> --wait-timeout 60 --restart
 uot-updater launch-current --install-root <install_root>
@@ -212,6 +212,7 @@ uot-updater launch-current --install-root <install_root>
 
 `install-prepared` 和 `apply-update` 会校验包大小与 SHA-256，安全解压到 `releases/<target_version>`，切换 `current.json`，并写入 `update-result.json` 和 `update-status.json`。runtime 会创建 `update.lock` 防止并发更新；`switch-installed` 也使用同一把锁。失败时也会写入失败结果和失败状态，dry-run 不写安装状态。`update-status.json` 的标准阶段是 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是 UI 阶段提示，不是下载字节进度；状态同时包含 `started_at`、`phase_started_at`、`phase_elapsed_ms`、`total_elapsed_ms` 等耗时字段。`--wait-pid` 等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT`；`--restart` 会切换后启动当前入口并记录 `restarted_pid`。旧 GUI 退出后不能继续接收内存回调；实时进度要由 updater 窗口或外部轮询进程读取状态文件。
 `uot publish` 会维护通道 `versions.json` 版本索引，并把包写入 `<app_id>/<channel>/v<target_version>/`。`list-remote` 优先读取索引，并补充扫描通道版本目录和旧版 `<app_id>/v<version>/` 历史目录。历史版本选择器应把 `versions.json.manifest_url` 当作目标版本 manifest 的权威路径，并通过 `show-version` / `get_remote_manifest()` 获取；不要在 GUI 或项目适配器里自行拼 `<app>/<channel>/v<version>/latest.json`。同一版本号可在不同 channel 远端存放不同包，但安装根仍使用 `releases/<target_version>`；同一客户端从测试包升级到正式包时应使用递增版本号，或显式 `install-prepared --force` 覆盖同版本 release。
+发布端是单机 CLI 模型，不需要部署发布服务。发布写入使用通道级 `publish.lock` 防止重复发布命令互相覆盖，并通过同目录临时文件原子替换 package、manifest、channel `latest.json` 和 `versions.json`。
 
 诊断包：
 

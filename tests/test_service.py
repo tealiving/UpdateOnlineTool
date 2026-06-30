@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import update_online_tool.launcher as launcher
+from update_online_tool.launcher import LaunchResult
 from update_online_tool.service import UpdateService
 from update_online_tool.settings import UpdateToolSettings
 from update_online_tool.versioning import UpdateDecision
@@ -598,3 +600,111 @@ def test_service_prepares_specific_remote_version(tmp_path: Path) -> None:
 
     assert prepared.verified is True
     assert prepared.package_path.read_bytes() == b"rollback"
+
+
+def test_service_launch_uses_standard_updater_sidecar_and_forwards_runtime_options(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """验证低层 launch 只解析 UOT 标准 updater sidecar 并传递 runtime 参数。"""
+    install_root = tmp_path / "install"
+    updater_path = install_root / "updater" / "MyToolUpdater.exe"
+    updater_path.parent.mkdir(parents=True)
+    updater_path.write_text("updater", encoding="utf-8")
+    package_path = tmp_path / "package.zip"
+    package_path.write_bytes(b"release")
+    _write_manifest(tmp_path, version="1.0.8", content=b"release")
+    manifest = UpdateService(UpdateToolSettings(nas_root=tmp_path)).get_remote_manifest(
+        app_id="automation-manual-studio",
+        version="1.0.8",
+        channel="stable",
+    )
+    captured: dict[str, object] = {}
+
+    class FakeLauncher:
+        """记录 launch 调用。"""
+
+        def __init__(self, updater_executable: Path) -> None:
+            captured["updater_executable"] = updater_executable
+
+        def launch(self, *, pending_payload: dict[str, object], pending_manifest_path: Path) -> LaunchResult:
+            captured["pending_payload"] = pending_payload
+            captured["pending_manifest_path"] = pending_manifest_path
+            return LaunchResult(started=True, updater_pid=4242, pending_manifest_path=pending_manifest_path)
+
+    monkeypatch.setattr(launcher, "StandaloneUpdaterLauncher", FakeLauncher)
+    service = UpdateService(
+        UpdateToolSettings(
+            nas_root=tmp_path,
+            updater_executable_name="MyToolUpdater.exe",
+        )
+    )
+    signature_key = tmp_path / "signing.pub"
+
+    result = service.launch(
+        package_path=package_path,
+        manifest=manifest,
+        install_root=install_root,
+        old_pid=123,
+        restart_executable="MyTool.exe",
+        force=True,
+        restart=False,
+        wait_timeout=12.5,
+        signature_key=signature_key,
+    )
+
+    pending_payload = captured["pending_payload"]
+    assert isinstance(pending_payload, dict)
+    assert result.updater_pid == 4242
+    assert captured["updater_executable"] == updater_path
+    assert captured["pending_manifest_path"] == install_root / "pending-update.json"
+    assert pending_payload["force"] is True
+    assert pending_payload["restart"] is False
+    assert pending_payload["wait_timeout"] == 12.5
+    assert pending_payload["signature_key"] == str(signature_key)
+
+
+def test_service_launch_resolves_nested_updater_without_windows_suffix(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """验证配置为 .exe 时可解析 onedir 中无后缀的 updater 入口。"""
+    install_root = tmp_path / "install"
+    nested_updater = install_root / "updater" / "MyToolUpdater" / "MyToolUpdater"
+    nested_updater.parent.mkdir(parents=True)
+    nested_updater.write_text("updater", encoding="utf-8")
+    package_path = tmp_path / "package.zip"
+    package_path.write_bytes(b"release")
+    _write_manifest(tmp_path, version="1.0.8", content=b"release")
+    manifest = UpdateService(UpdateToolSettings(nas_root=tmp_path)).get_remote_manifest(
+        app_id="automation-manual-studio",
+        version="1.0.8",
+        channel="stable",
+    )
+    captured: dict[str, Path] = {}
+
+    class FakeLauncher:
+        """记录 launch 调用。"""
+
+        def __init__(self, updater_executable: Path) -> None:
+            captured["updater_executable"] = updater_executable
+
+        def launch(self, *, pending_payload: dict[str, object], pending_manifest_path: Path) -> LaunchResult:
+            return LaunchResult(started=True, updater_pid=4242, pending_manifest_path=pending_manifest_path)
+
+    monkeypatch.setattr(launcher, "StandaloneUpdaterLauncher", FakeLauncher)
+
+    UpdateService(
+        UpdateToolSettings(
+            nas_root=tmp_path,
+            updater_executable_name="MyToolUpdater.exe",
+        )
+    ).launch(
+        package_path=package_path,
+        manifest=manifest,
+        install_root=install_root,
+        old_pid=123,
+        restart_executable="MyTool.exe",
+    )
+
+    assert captured["updater_executable"] == nested_updater

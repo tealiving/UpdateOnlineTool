@@ -114,3 +114,60 @@ def test_launcher_passes_restart_executable_as_entry_name(tmp_path: Path) -> Non
             "123",
         ]
     ]
+
+
+def test_launcher_passes_signature_key_and_wait_timeout(tmp_path: Path) -> None:
+    """验证 launcher 会把验签密钥和等待超时传给 updater。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None
+    """
+    updater = tmp_path / "AutomationManualUpdater"
+    pending = tmp_path / "pending-update.json"
+    signature_key = tmp_path / "uot-signing.pub"
+    updater.write_text("fake", encoding="utf-8")
+    signature_key.write_text("public", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+        """捕获 Popen 参数。
+
+        :param args: 命令参数。
+        :param cwd: 工作目录。
+        :param close_fds: 是否关闭文件描述符。
+        :return: 假进程。
+        """
+        calls.append(args)
+
+        class Process:
+            """假进程。"""
+
+            pid = 789
+
+        return Process()
+
+    StandaloneUpdaterLauncher(updater, popen=popen).launch(
+        pending_payload={
+            "package_path": "package.zip",
+            "signature_key": str(signature_key),
+            "old_pid": 123,
+            "wait_timeout": 12.5,
+        },
+        pending_manifest_path=pending,
+    )
+
+    assert calls == [
+        [
+            str(updater),
+            "apply",
+            "--pending",
+            str(pending),
+            "--restart",
+            "--signature-key",
+            str(signature_key),
+            "--wait-pid",
+            "123",
+            "--wait-timeout",
+            "12.5",
+        ]
+    ]

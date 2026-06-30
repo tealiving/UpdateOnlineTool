@@ -91,6 +91,37 @@ def test_updater_cli_apply_pending_update(tmp_path: Path, capsys) -> None:
     assert current_payload["version"] == "1.1.0"
 
 
+def test_updater_cli_apply_rejects_tampered_pending_signature(tmp_path: Path) -> None:
+    """验证 uot-updater apply --signature-key 拒绝 pending 中被篡改的 manifest。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    package_path = _write_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
+    key_path = tmp_path / "signing.key"
+    key_path.write_text("release-secret\n", encoding="utf-8")
+    manifest_payload = sign_manifest_payload(
+        _manifest_payload(package_path, version="1.1.0"),
+        key=load_hmac_key(key_path),
+        key_id="release",
+    )
+    manifest_payload["version"] = "9.9.9"
+    pending_path = tmp_path / "pending-update.json"
+    pending_path.write_text(
+        json.dumps(
+            {
+                "package_path": str(package_path),
+                "install_root": str(install_root),
+                "manifest": manifest_payload,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["apply", "--pending", str(pending_path), "--signature-key", str(key_path)])
+
+    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert current_payload["version"] == "1.0.0"
+
+
 def test_updater_cli_install_can_restart_current_release(tmp_path: Path, capsys, monkeypatch) -> None:
     """验证 uot-updater install --restart 会输出重启 PID。"""
     install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
