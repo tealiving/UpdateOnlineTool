@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "update-online-tool"
-version = "0.2.1"
+version = "0.2.2"
 description = "NAS-based online update SDK and CLI for PyQt tools"
 requires-python = ">=3.11"
 readme = "README.md"
