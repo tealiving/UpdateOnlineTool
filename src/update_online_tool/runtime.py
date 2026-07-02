@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.install_root import missing_current_json_message, normalize_install_root
 from update_online_tool.installed import switch_installed_version as _switch_installed_version
 from update_online_tool.locks import runtime_lock
 from update_online_tool.manifest import UpdateManifest
@@ -184,7 +185,7 @@ def install_prepared_package(
     :param restart: 安装成功后启动 current.json 指向的入口。
     :return: runtime 结果。
     """
-    root = Path(install_root)
+    root = normalize_install_root(Path(install_root))
     package = Path(package_path)
     previous_version = _current_version(root)
     releases_root = root / "releases"
@@ -496,7 +497,7 @@ def switch_installed_release(
     :param restart: 切换成功后启动当前版本。
     :return: runtime 结果。
     """
-    root = Path(install_root)
+    root = normalize_install_root(Path(install_root))
     target_version = str(version or "").strip()
     previous_version = _current_version(root)
     target_release_dir = root / "releases" / target_version
@@ -623,7 +624,7 @@ def rollback_installation(
     :param restart: 回滚成功后启动当前版本。
     :return: runtime 结果。
     """
-    root = Path(install_root)
+    root = normalize_install_root(Path(install_root))
     current_version = ""
     previous_version = ""
     release_dir = root / "releases"
@@ -722,7 +723,7 @@ def rollback_installation(
 
 def launch_current(*, install_root: Path) -> subprocess.Popen[bytes]:
     """启动 current.json 指向的当前版本入口。"""
-    root = Path(install_root)
+    root = normalize_install_root(Path(install_root))
     current_payload = _read_json_object(root / "current.json", "current.json")
     release_dir = str(current_payload.get("release_dir", "")).strip()
     executable = str(current_payload.get("executable", "")).strip()
@@ -1092,7 +1093,8 @@ def _resolve_entry_name(install_root: Path, entry_name: str) -> str:
     explicit = str(entry_name or "").strip()
     if explicit:
         return explicit
-    payload = _read_json_object(Path(install_root) / "current.json", "current.json")
+    root = normalize_install_root(Path(install_root))
+    payload = _read_json_object(root / "current.json", "current.json")
     entry_payload = payload.get("entry")
     if isinstance(entry_payload, dict):
         entry_path = entry_payload.get("path")
@@ -1106,7 +1108,8 @@ def _resolve_entry_name(install_root: Path, entry_name: str) -> str:
 
 def _current_version(install_root: Path) -> str:
     """读取当前版本；不存在时返回空字符串。"""
-    current_path = Path(install_root) / "current.json"
+    root = normalize_install_root(Path(install_root))
+    current_path = root / "current.json"
     if not current_path.is_file():
         return ""
     payload = _read_json_object(current_path, "current.json")
@@ -1116,6 +1119,8 @@ def _current_version(install_root: Path) -> str:
 def _read_json_object(path: Path, context: str) -> dict[str, Any]:
     """读取 JSON 对象。"""
     if not path.is_file():
+        if context == "current.json":
+            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, missing_current_json_message(path.parent))
         raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"{context} not found: {path}")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))

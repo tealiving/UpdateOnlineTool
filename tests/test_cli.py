@@ -881,6 +881,26 @@ def test_cli_list_installed_outputs_install_root_versions(tmp_path: Path, capsys
     assert payload["versions"][1]["entry_exists"] is True
 
 
+def test_cli_list_installed_normalizes_release_dir_install_root(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """验证 list-installed 误传 release 目录时输出归一化安装根。
+
+    :param tmp_path: pytest 临时目录
+    :param capsys: pytest 输出捕获工具
+    :return: None
+    """
+    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+
+    exit_code = main(["list-installed", "--install-root", str(install_root / "releases" / "1.0.5")])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["install_root"] == str(install_root)
+    assert [item["version"] for item in payload["versions"]] == ["1.0.5"]
+
+
 def test_cli_switch_installed_updates_current_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """验证 switch-installed 可切换 current.json。
 

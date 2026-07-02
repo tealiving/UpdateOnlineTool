@@ -29,6 +29,19 @@ def test_desktop_client_checks_with_current_json_version(tmp_path: Path) -> None
     assert result.manifest.version == "1.1.0"
 
 
+def test_desktop_client_normalizes_release_dir_install_root(tmp_path: Path) -> None:
+    """验证误传 release 目录时桌面客户端可回到安装根。
+
+    :param tmp_path: pytest 临时目录
+    :return: None
+    """
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    client = _client(install_root=install_root / "releases" / "1.0.0", nas_root=tmp_path / "nas")
+
+    assert client.install_root() == install_root
+    assert client.current_version() == "1.0.0"
+
+
 def test_desktop_client_check_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
     """验证桌面检查更新阶段也校验 manifest 签名。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
@@ -217,6 +230,47 @@ def test_desktop_client_prewarms_updater(tmp_path: Path) -> None:
     assert kwargs["close_fds"] is True
     assert "stdout" in kwargs
     assert "stderr" in kwargs
+
+
+def test_desktop_client_prewarms_updater_from_release_dir_install_root(tmp_path: Path) -> None:
+    """验证误传 release 目录时 updater 预热仍定位安装根 sidecar。
+
+    :param tmp_path: pytest 临时目录
+    :return: None
+    """
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    client = _client(
+        install_root=install_root / "releases" / "1.0.0",
+        nas_root=tmp_path / "nas",
+        popen=_popen_wait_recorder(calls),
+    )
+
+    client.prewarm_updater()
+
+    command, kwargs = calls[0]
+    assert command == [str(updater), "--help"]
+    assert kwargs["cwd"] == str(updater.parent)
+
+
+def test_desktop_client_prewarm_reports_release_dir_hint_when_updater_missing(tmp_path: Path) -> None:
+    """验证 updater 缺失时保留 release 目录误传诊断。
+
+    :param tmp_path: pytest 临时目录
+    :return: None
+    """
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    client = _client(install_root=install_root / "releases" / "1.0.0", nas_root=tmp_path / "nas")
+
+    with pytest.raises(UpdateError) as error:
+        client.prewarm_updater()
+
+    assert error.value.code is UpdateErrorCode.UPDATER_NOT_FOUND
+    assert "version release directory" in str(error.value)
+    assert str(install_root / "updater") in str(error.value)
 
 
 def test_desktop_client_reads_status_and_result(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from update_online_tool.errors import UpdateError
+from update_online_tool.install_root import InstallRootResolution, resolve_install_root
 from update_online_tool.installed import list_installed_versions
 
 MAX_LOG_BYTES = 1024 * 1024
@@ -17,11 +18,13 @@ MAX_LOG_BYTES = 1024 * 1024
 
 def collect_diagnostics(*, install_root: Path, entry_name: str = "") -> dict[str, Any]:
     """收集安装根诊断信息。"""
-    root = Path(install_root)
+    resolution = _resolve_for_diagnostics(Path(install_root))
+    root = resolution.normalized
     report: dict[str, Any] = {
         "schema_version": 1,
         "generated_at": int(time.time()),
         "install_root": str(root),
+        "install_root_resolution": resolution.to_payload(),
         "exists": root.exists(),
         "path": _path_status(root),
         "files": _file_status(root),
@@ -40,7 +43,7 @@ def collect_diagnostics(*, install_root: Path, entry_name: str = "") -> dict[str
 
 def write_diagnostic_archive(*, report: dict[str, Any], install_root: Path, archive_path: Path) -> Path:
     """写入诊断 zip 包。"""
-    root = Path(install_root)
+    root = _resolve_for_diagnostics(Path(install_root)).normalized
     target = Path(archive_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -55,6 +58,25 @@ def write_diagnostic_archive(*, report: dict[str, Any], install_root: Path, arch
             except OSError:
                 continue
     return target
+
+
+def _resolve_for_diagnostics(path: Path) -> InstallRootResolution:
+    """为 doctor 解析安装根，无法纠偏时保留原路径继续诊断。
+
+    :param path: 用户传入路径
+    :return: 安装根解析结果
+    """
+    try:
+        return resolve_install_root(path)
+    except UpdateError:
+        suggested = path.parent.parent if path.parent.name == "releases" else None
+        return InstallRootResolution(
+            requested=path,
+            normalized=path,
+            looked_like_release_dir=suggested is not None,
+            normalized_from_release_dir=False,
+            suggested_install_root=suggested,
+        )
 
 
 def _file_status(root: Path) -> dict[str, bool]:
@@ -220,6 +242,20 @@ def _detect_problems(report: dict[str, Any]) -> list[str]:
             problems.append("releases directory is missing")
         if files.get("update_lock"):
             problems.append("update.lock exists; an update may be running or stale")
+    resolution = report.get("install_root_resolution")
+    if isinstance(resolution, dict):
+        if resolution.get("install_root_normalized"):
+            problems.append(
+                "install_root was normalized from a release directory: {}".format(
+                    resolution.get("requested_install_root", "")
+                )
+            )
+        elif resolution.get("looked_like_release_dir"):
+            problems.append(
+                "install_root looks like a release directory; use install root instead: {}".format(
+                    resolution.get("suggested_install_root", "")
+                )
+            )
     update_result = report.get("update_result")
     if isinstance(update_result, dict):
         payload = update_result.get("payload")

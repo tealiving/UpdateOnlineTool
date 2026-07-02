@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.install_root import missing_current_json_message, normalize_install_root
 from update_online_tool.locks import runtime_lock
 from update_online_tool.versioning import parse_version_tuple
 
@@ -69,7 +70,7 @@ def list_installed_versions(*, install_root: Path, entry_name: str = "") -> list
     :param entry_name: 可选入口名；为空时从 current.json 推断。
     :return: 已安装版本列表，按版本倒序排列。
     """
-    root = Path(install_root)
+    root = normalize_install_root(Path(install_root))
     releases_root = root / "releases"
     if not releases_root.is_dir():
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"releases directory not found: {releases_root}")
@@ -110,7 +111,7 @@ def migrate_install_root(
     dry_run: bool = False,
 ) -> MigrationResult:
     """把旧版平铺安装根迁移为 releases/current.json 结构。"""
-    root = Path(install_root)
+    root = normalize_install_root(Path(install_root))
     target_version = str(version or "").strip()
     if not target_version:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "version must be non-empty")
@@ -197,7 +198,7 @@ def switch_installed_version(
     :param use_lock: 是否使用安装根 update.lock；runtime 已持锁时传 False。
     :return: 切换后的版本信息。
     """
-    root = Path(install_root)
+    root = normalize_install_root(Path(install_root))
     target_version = str(version or "").strip()
     if not target_version:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "version must be non-empty")
@@ -257,7 +258,7 @@ def _read_current_json(install_root: Path, *, required: bool) -> dict[str, Any]:
     path = Path(install_root) / "current.json"
     if not path.is_file():
         if required:
-            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"current.json not found: {path}")
+            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, missing_current_json_message(Path(install_root)))
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))

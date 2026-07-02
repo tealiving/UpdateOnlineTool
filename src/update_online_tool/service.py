@@ -10,6 +10,7 @@ from typing import Any
 
 from update_online_tool.downloader import CancellationToken, PreparedPackage, copy_package_with_verification
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.install_root import normalize_install_root
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.nas import NasReleaseSource
 from update_online_tool.settings import UpdateToolSettings
@@ -294,10 +295,11 @@ class UpdateService:
         """
         from update_online_tool.launcher import StandaloneUpdaterLauncher
 
+        root = normalize_install_root(Path(install_root))
         pending_payload: dict[str, object] = {
             "package_path": str(package_path),
             "manifest": manifest.to_payload(),
-            "install_root": str(install_root),
+            "install_root": str(root),
             "old_pid": old_pid,
             "restart_executable": restart_executable,
             "force": bool(force),
@@ -307,12 +309,12 @@ class UpdateService:
         if signature_key is not None:
             pending_payload["signature_key"] = str(Path(signature_key))
         updater_executable = _resolve_standard_updater_executable(
-            install_root=Path(install_root),
+            install_root=root,
             updater_name=self.settings.updater_executable_name,
         )
         return StandaloneUpdaterLauncher(updater_executable).launch(
             pending_payload=pending_payload,
-            pending_manifest_path=Path(install_root) / "pending-update.json",
+            pending_manifest_path=root / "pending-update.json",
         )
 
     def _load_manifest(self, path: Path) -> UpdateManifest:
@@ -444,14 +446,15 @@ def _resolve_standard_updater_executable(*, install_root: Path, updater_name: st
     :param updater_name: settings 中的 updater 名称。
     :return: updater 可执行文件路径。
     """
+    root = normalize_install_root(Path(install_root))
     configured = Path(updater_name)
     candidates = [
-        Path(install_root) / "updater" / configured.name,
-        Path(install_root) / "updater" / configured.stem / configured.name,
+        root / "updater" / configured.name,
+        root / "updater" / configured.stem / configured.name,
     ]
     if configured.suffix:
-        candidates.append(Path(install_root) / "updater" / configured.stem / configured.stem)
-    legacy_candidate = Path(install_root) / configured.name
+        candidates.append(root / "updater" / configured.stem / configured.stem)
+    legacy_candidate = root / configured.name
     for candidate in candidates:
         if candidate.is_file():
             return candidate

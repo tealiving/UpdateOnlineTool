@@ -62,6 +62,40 @@ def test_collect_diagnostics_reports_missing_current_entry(tmp_path: Path) -> No
     assert any("current release entry is missing" in problem for problem in report["problems"])
 
 
+def test_collect_diagnostics_normalizes_release_dir_install_root(tmp_path: Path) -> None:
+    """验证 doctor 可识别并归一化误传的 release 目录。
+
+    :param tmp_path: pytest 临时目录
+    :return: None
+    """
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+
+    report = collect_diagnostics(install_root=install_root / "releases" / "1.0.0")
+
+    assert report["install_root"] == str(install_root)
+    assert report["install_root_resolution"]["requested_install_root"] == str(install_root / "releases" / "1.0.0")
+    assert report["install_root_resolution"]["install_root_normalized"] is True
+    assert report["files"]["current_json"] is True
+    assert any("install_root was normalized" in problem for problem in report["problems"])
+
+
+def test_collect_diagnostics_reports_release_dir_hint_without_current_json(tmp_path: Path) -> None:
+    """验证 doctor 无法归一化时输出 release 目录误传提示。
+
+    :param tmp_path: pytest 临时目录
+    :return: None
+    """
+    release_dir = tmp_path / "install" / "releases" / "1.0.0"
+    release_dir.mkdir(parents=True)
+
+    report = collect_diagnostics(install_root=release_dir)
+
+    assert report["install_root"] == str(release_dir)
+    assert report["install_root_resolution"]["looked_like_release_dir"] is True
+    assert report["install_root_resolution"]["suggested_install_root"] == str(tmp_path / "install")
+    assert any("looks like a release directory" in problem for problem in report["problems"])
+
+
 def test_collect_diagnostics_reports_unc_hints() -> None:
     """验证 UNC-like 安装根会输出路径提示。"""
     report = collect_diagnostics(install_root=Path("//server/share/MyTool"))

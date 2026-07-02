@@ -12,6 +12,7 @@ from typing import Any
 
 from update_online_tool.downloader import CancellationToken, PreparedPackage
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.install_root import missing_current_json_message, missing_updater_message, normalize_install_root
 from update_online_tool.installed import InstalledVersion, list_installed_versions
 from update_online_tool.launcher import LaunchResult, PopenFactory, StandaloneUpdaterLauncher
 from update_online_tool.manifest import UpdateManifest
@@ -228,7 +229,10 @@ class DesktopUpdateClient:
         """
         updater = self._updater_executable()
         if not updater.is_file():
-            raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"updater not found: {updater}")
+            raise UpdateError(
+                UpdateErrorCode.UPDATER_NOT_FOUND,
+                missing_updater_message(Path(self.config.install_root), updater),
+            )
         command = [str(updater), "--help"]
         kwargs: dict[str, object] = {
             "cwd": str(updater.parent),
@@ -290,7 +294,7 @@ class DesktopUpdateClient:
 
         :return: 安装根路径。
         """
-        return Path(self.config.install_root)
+        return normalize_install_root(Path(self.config.install_root))
 
     def pending_path(self) -> Path:
         """返回标准 pending-update.json 路径。
@@ -337,7 +341,7 @@ class DesktopUpdateClient:
         """
         path = self.install_root() / "current.json"
         if not path.is_file():
-            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"current.json not found: {path}")
+            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, missing_current_json_message(self.install_root()))
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:

@@ -568,6 +568,22 @@ def test_install_prepared_package_rejects_windows_style_path_traversal(tmp_path:
     assert not (install_root / "releases" / "1.1.0").exists()
 
 
+def test_switch_installed_release_normalizes_release_dir_install_root(tmp_path: Path) -> None:
+    """验证 runtime 本地切换可纠正误传的 release 目录。
+
+    :param tmp_path: pytest 临时目录
+    :return: None
+    """
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    _write_release_entry(install_root, "1.0.1", "MyTool.exe", "new")
+
+    result = switch_installed_release(install_root=install_root / "releases" / "1.0.0", version="1.0.1")
+
+    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    assert result.version == "1.0.1"
+    assert current_payload["version"] == "1.0.1"
+
+
 def test_launch_current_uses_open_n_for_macos_app_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """验证 macOS 上 launch_current 会使用 open -n 启动 .app。"""
     install_root = _write_install_root_with_app_bundle(tmp_path, current_version="1.0.0", entry_name="MyTool.app")
@@ -595,6 +611,35 @@ def test_launch_current_uses_open_n_for_macos_app_bundle(tmp_path: Path, monkeyp
     )
     assert launched["cwd"] == str((install_root / "releases" / "1.0.0" / "MyTool.app").parent)
     assert launched["close_fds"] is True
+
+
+def test_launch_current_normalizes_release_dir_install_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """验证 launch_current 可纠正误传的 release 目录。
+
+    :param tmp_path: pytest 临时目录
+    :param monkeypatch: pytest monkeypatch
+    :return: None
+    """
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    launched: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_popen(args: list[str], cwd: str | None = None, close_fds: bool = False) -> object:
+        launched["args"] = tuple(args)
+        launched["cwd"] = cwd
+        launched["close_fds"] = close_fds
+        return FakeProcess()
+
+    monkeypatch.setattr(runtime.sys, "platform", "win32")
+    monkeypatch.setattr(runtime.subprocess, "Popen", fake_popen)
+
+    process = runtime.launch_current(install_root=install_root / "releases" / "1.0.0")
+
+    assert process.pid == 4321
+    assert launched["args"] == (str(install_root / "releases" / "1.0.0" / "MyTool.exe"),)
+    assert launched["cwd"] == str(install_root / "releases" / "1.0.0")
 
 
 def test_launch_current_falls_back_to_entry_path_when_executable_missing(

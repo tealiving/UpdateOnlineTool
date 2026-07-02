@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from update_online_tool.diagnostics import collect_diagnostics, write_diagnostic_archive
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.install_root import normalize_install_root
 from update_online_tool.installed import list_installed_versions, migrate_install_root, switch_installed_version
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.migration_package import verify_migration_package, write_migration_package_template
@@ -726,9 +727,10 @@ def _prepare_version(args: argparse.Namespace) -> int:
 
 def _list_installed(args: argparse.Namespace) -> int:
     """列出安装根已安装版本。"""
-    versions = list_installed_versions(install_root=Path(args.install_root), entry_name=args.entry_name)
+    install_root = normalize_install_root(Path(args.install_root))
+    versions = list_installed_versions(install_root=install_root, entry_name=args.entry_name)
     payload = {
-        "install_root": str(Path(args.install_root)),
+        "install_root": str(install_root),
         "versions": [
             {
                 "version": item.version,
