@@ -10,9 +10,9 @@ UOT 应拥有完整在线更新能力：NAS 配置解析、发布目录约定、
 
 - `app_id`、`platform`、`channel`、`install_root`、settings 路径。
 - GUI 展示、确认弹窗、下载进度展示、后台线程调度。
-- 调用 `DesktopUpdateClient.check()`、`list_remote_versions()`、`install_remote_version()`、`switch_installed_version()`、`rollback()`、`read_status()`、`read_result()`。
+- 调用 `DesktopUpdateClient.check()`、`list_remote_versions()`、`install_remote_version()`、`switch_installed_version()`、`rollback()`、`prewarm_updater()`、`read_status()`、`read_result()`。
 
-工具仓库不应解析 `current.json`、拼 updater 命令、寻找 updater exe、构造版本 `latest.json` 路径、修改 `releases/` 或处理 sidecar。
+工具仓库不应解析 `current.json`、拼 updater 命令、寻找 updater exe、构造版本 `latest.json` 路径、修改 `releases/` 或处理 sidecar；updater 预热也应通过 `DesktopUpdateClient` 执行。
 
 ## 发布模型
 
@@ -75,6 +75,8 @@ UOT 当前采用单机 CLI 发布模型：发布人员在发布机上运行 `uot
 
 状态：符合。工具仓库不需要拼 updater 参数。
 
+补充：`DesktopUpdateClient.prewarm_updater()` 负责预热打包 updater，用于降低 PyInstaller updater 新路径首次执行对用户切换版本的可见等待。预热不修改安装根状态，失败时应作为非阻塞优化失败处理。
+
 ### 7. 安装远端版本
 
 runtime 安装流程：
@@ -133,6 +135,7 @@ P2：
 - 没有 updater 自带可视化进度窗口。
 - same-version cross-channel 本地仍共用 `releases/<version>`，需要强制递增版本或显式 `--force`。
 - 没有对 updater exe/launcher exe 做平台代码签名校验；manifest 只能保护包内容。
+- PyInstaller updater 首次加载耗时仍依赖平台行为；当前通过后台预热缓解，生产签名/公证是否进一步改善需独立 benchmark 验证。
 
 ## 结论
 

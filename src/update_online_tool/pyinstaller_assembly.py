@@ -562,11 +562,11 @@ def _updater_spec_text(
     )
     return f"""# -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_submodules
-
-
-hiddenimports = collect_submodules("cryptography") + [
+hiddenimports = [
     "update_online_tool.updater_cli",
+    "update_online_tool.signature",
+    "cryptography.hazmat.primitives.asymmetric.ed25519",
+    "cryptography.hazmat.primitives.serialization",
 ]
 
 a = Analysis(

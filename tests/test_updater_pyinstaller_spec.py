@@ -18,7 +18,9 @@ def test_write_updater_pyinstaller_spec_generates_onedir_files(tmp_path: Path) -
     spec_text = result.spec_path.read_text(encoding="utf-8")
     assert result.pyinstaller_command == ["python", "-m", "PyInstaller", "--noconfirm", str(result.spec_path)]
     assert "update_online_tool.updater_cli" in entry_text
-    assert "collect_submodules(\"cryptography\")" in spec_text
+    assert "collect_submodules(\"cryptography\")" not in spec_text
+    assert '"update_online_tool.signature"' in spec_text
+    assert '"cryptography.hazmat.primitives.asymmetric.ed25519"' in spec_text
     assert "COLLECT(" in spec_text
     assert "name='MyToolUpdater'" in spec_text
 

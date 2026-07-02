@@ -15,6 +15,7 @@
 - 校验包体大小和 SHA-256。
 - 写入 pending update manifest，启动标准 updater。
 - 安装远端版本、切换本地版本、回滚版本并按需重启当前入口。
+- 后台预热打包 updater，降低 PyInstaller updater 首次执行对版本切换的可见等待。
 - 维护 `current.json`、`update-result.json`、`update-status.json` 和 `update.lock`。
 - 通过 `uot` CLI 发布、校验和检查 release。
 
@@ -406,8 +407,11 @@ versions = client.list_remote_versions(include_hidden=False)
 client.install_remote_version("1.0.4", old_pid=12345, restart=True, force=False)
 client.switch_installed_version("1.0.3", old_pid=12345, restart=True)
 client.rollback(old_pid=12345, restart=True)
+client.prewarm_updater(timeout=20.0)
 status = client.read_status()
 ```
+
+`prewarm_updater()` 是可选启动体验优化，适合 GUI 启动后空闲时在后台线程调用，用于把打包 updater 的首次加载成本前移。它不改变安装、切换、回滚语义；预热失败应记录或静默降级，不应阻止检查更新、文件处理、安装、切换或回滚。接入方不应为了预热自行解析 updater 路径或拼 `uot-updater` 命令。
 
 `UpdateService`、`prepare-version`、`pyqt_runtime` 仍保留给发布工具、测试脚本和旧项目兼容。新 GUI 不应自行拼 updater 命令，不应读取或修改 `current.json`，也不应构造版本目录里的 `latest.json` 路径。
 

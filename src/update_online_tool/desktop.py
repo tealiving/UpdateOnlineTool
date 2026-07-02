@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -217,6 +219,43 @@ class DesktopUpdateClient:
         except OSError as exc:
             raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {self._updater_executable()}") from exc
         return LaunchResult(started=True, updater_pid=getattr(process, "pid", None), pending_manifest_path=None)
+
+    def prewarm_updater(self, *, timeout: float = 20.0) -> float:
+        """后台预热标准 updater，降低首次版本切换的可见等待。
+
+        :param timeout: 预热命令最大等待秒数。
+        :return: 预热耗时秒数。
+        """
+        updater = self._updater_executable()
+        if not updater.is_file():
+            raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"updater not found: {updater}")
+        command = [str(updater), "--help"]
+        kwargs: dict[str, object] = {
+            "cwd": str(updater.parent),
+            "close_fds": True,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        started_at = time.perf_counter()
+        try:
+            process = self._popen(command, **kwargs)
+        except TypeError:
+            process = self._popen(command, cwd=str(updater.parent), close_fds=True)
+        except OSError as exc:
+            raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {updater}") from exc
+        try:
+            if hasattr(process, "communicate"):
+                process.communicate(timeout=float(timeout))
+            elif hasattr(process, "wait"):
+                process.wait(timeout=float(timeout))
+        except subprocess.TimeoutExpired as exc:
+            if hasattr(process, "kill"):
+                process.kill()
+            raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater prewarm timeout: {updater}") from exc
+        return time.perf_counter() - started_at
 
     def read_status(self) -> dict[str, Any]:
         """读取 update-status.json。

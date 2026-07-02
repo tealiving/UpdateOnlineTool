@@ -59,7 +59,7 @@ from update_online_tool.signature import (
 )
 from update_online_tool.versioning import UpdateDecision
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "UpdateError",

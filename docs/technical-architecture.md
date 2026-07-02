@@ -40,6 +40,7 @@ UOT 拥有：
 - 发布、校验、历史版本索引、包复制与 SHA-256 校验。
 - PyInstaller 安装目录和升级目录装配。
 - pending 写入、updater 解析与启动。
+- 打包 updater 预热和冷启动诊断入口。
 - release 安装、本地版本切换、回滚、旧进程等待、重启、状态和诊断。
 
 ## 模块职责
@@ -51,7 +52,7 @@ UOT 拥有：
 | `manifest.py` | 定义 manifest schema、包信息、策略字段和签名字段。 |
 | `signature.py` | 生成 HMAC/Ed25519 密钥，签名和验签 manifest。 |
 | `service.py` | 低层 SDK，负责检查更新、列出远端版本、读取指定版本 manifest、准备包。 |
-| `desktop.py` | 面向桌面 GUI 的高层 facade，统一检查、列表、安装、切换、回滚和状态读取。 |
+| `desktop.py` | 面向桌面 GUI 的高层 facade，统一检查、列表、安装、切换、回滚、updater 预热和状态读取。 |
 | `launcher.py` | 写入 `pending-update.json` 并启动标准 updater。 |
 | `runtime.py` | updater 运行态，负责安装、切换、回滚、锁、状态文件、旧进程等待和重启。 |
 | `installed.py` | 管理安装根 `releases/<version>` 和 `current.json`。 |
@@ -199,6 +200,19 @@ flowchart TD
 ```
 
 工具仓库不应直接改 `current.json`。所有本地切换都应通过 `DesktopUpdateClient.switch_installed_version()` 或打包后的 `uot-updater switch-installed`。
+
+## updater 预热和冷启动诊断
+
+打包后的 PyInstaller updater 在 macOS 等平台上可能出现新路径首次执行慢、第二次执行很快的冷启动现象。这类耗时发生在 updater 进程首次加载阶段，不等同于 `current.json` 切换慢，也不能仅凭签名、quarantine、NAS 路径或包大小直接归因。
+
+UOT 在桌面 facade 中提供 `DesktopUpdateClient.prewarm_updater()` 作为标准预热入口。GUI 可以在启动后空闲阶段从后台线程调用该方法，让首次加载成本提前发生；后续用户触发 `install_remote_version()`、`switch_installed_version()` 或 `rollback()` 时仍走同一套标准 updater runtime。
+
+预热的约束：
+
+- 预热只运行 updater 的轻量帮助命令，不修改安装根状态。
+- 预热失败是非阻塞优化失败，不应阻止检查更新、安装、切换、回滚或业务处理。
+- 工具仓库不得为了预热自行解析 `updater/` 目录或拼 updater 命令，应通过 `DesktopUpdateClient` 调用。
+- 排查性能时应从 fresh copied install root 分别记录首次/第二次 `--help` 和 `switch-installed` 耗时，再判断是 updater 冷启动、运行态切换、签名/公证还是其他因素。
 
 ## 回滚流程
 

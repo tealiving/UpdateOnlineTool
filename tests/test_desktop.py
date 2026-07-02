@@ -198,6 +198,27 @@ def test_desktop_client_rolls_back_through_updater(tmp_path: Path) -> None:
     ]
 
 
+def test_desktop_client_prewarms_updater(tmp_path: Path) -> None:
+    """验证桌面客户端可预热标准 updater。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    client = _client(install_root=install_root, nas_root=tmp_path / "nas", popen=_popen_wait_recorder(calls))
+
+    elapsed = client.prewarm_updater(timeout=12.5)
+
+    assert elapsed >= 0.0
+    assert calls
+    command, kwargs = calls[0]
+    assert command == [str(updater), "--help"]
+    assert kwargs["cwd"] == str(updater.parent)
+    assert kwargs["close_fds"] is True
+    assert "stdout" in kwargs
+    assert "stderr" in kwargs
+
+
 def test_desktop_client_reads_status_and_result(tmp_path: Path) -> None:
     """验证桌面客户端读取运行态状态和结果。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
@@ -322,6 +343,27 @@ def _popen_recorder(calls: list[list[str]]):
             """假进程。"""
 
             pid = 456
+
+        return Process()
+
+    return popen
+
+
+def _popen_wait_recorder(calls: list[tuple[list[str], dict[str, object]]]):
+    """创建记录 Popen 参数并支持 wait/communicate 的假函数。"""
+
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
+        """记录进程启动参数。"""
+        calls.append((args, kwargs))
+
+        class Process:
+            """假进程。"""
+
+            pid = 456
+
+            def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+                """模拟进程正常结束。"""
+                return b"", b""
 
         return Process()
 
