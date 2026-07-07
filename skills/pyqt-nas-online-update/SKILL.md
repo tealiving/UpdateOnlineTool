@@ -23,13 +23,16 @@ UOT owns the complete update runtime:
 
 - NAS settings parsing, `nas.root` / `nas.roots`, UNC and `file://` normalization.
 - NAS release layout, `latest.json`, `versions.json`, manifest URLs, package URLs.
+- UOT 0.2.3+ makes historical version listing tolerant to per-version SMB `OSError`: inaccessible `versions.json` entries, scanned version manifests, or package existence probes are skipped or marked unavailable without failing the whole list.
 - Manifest schema, version policy fields, signing and signature verification.
 - Publish, verify, check, list, show, prepare, install, apply, switch, rollback, doctor.
 - Package copy, size/SHA-256 validation, cancellation and progress callback.
 - Standard `DesktopUpdateClient` facade.
 - `pending-update.json`, updater path resolution, updater command construction.
 - `current.json`, `releases/<version>`, `update.lock`, `update-status.json`, `update-result.json`.
+- Install-root normalization and diagnostics for accidental `releases/<version>` inputs in UOT 0.2.2+.
 - Process wait/restart and standard `uot-updater` behavior.
+- Packaged updater prewarming and cold-start diagnostics through `DesktopUpdateClient.prewarm_updater()`.
 - PyInstaller install/update directory assembly and updater sidecar layout.
 
 Tool projects own only:
@@ -68,8 +71,9 @@ Tool projects must not:
 2. Check project boundaries:
    - The PyQt project owns GUI update prompts, user-facing progress, worker/thread scheduling, app id/platform/channel configuration, and version source.
    - UOT owns NAS settings parsing, NAS read/write probing, latest/package publish and verify, package copy/download, checksum validation, DesktopUpdateClient facade, pending manifest writing, updater launch, install, local version switch, rollback, process wait/restart, current.json, update-status.json, update-result.json, and standard PyInstaller assembly.
-   - For new GUI integrations, prefer `DesktopUpdateClient.from_config(...)` and its `check()`, `list_remote_versions()`, `install_remote_version()`, `switch_installed_version()`, `rollback()`, `read_status()`, and `read_result()` methods.
+   - For new GUI integrations, prefer `DesktopUpdateClient.from_config(...)` and its `check()`, `list_remote_versions()`, `install_remote_version()`, `switch_installed_version()`, `rollback()`, `prewarm_updater()`, `read_status()`, and `read_result()` methods.
    - Do not let tool projects construct updater commands, resolve updater paths, parse `current.json`, derive entry names, or construct version `latest.json` paths. Those are UOT runtime details.
+   - UOT 0.2.2+ can normalize an accidental `install_root/releases/<version>` input back to the install root when the parent has `current.json`; still fix the tool project to pass the real install root and treat normalization as defense-in-depth diagnostics.
    - Avoid reintroducing generic manifest generators, generic downloaders, generic SHA verifiers, or provider-specific token logic into the PyQt tool project.
 
 3. Initialize project configuration:
@@ -104,6 +108,7 @@ Tool projects must not:
    - Use publish policy flags when needed: `--allow-downgrade`, `--hidden`, `--requires-confirmation`, `--rollout-percent`, and `--data-schema-version`.
    - Use `uot list-remote --include-hidden` for operator-only version pickers; hidden versions are filtered from normal lists and normal update checks.
    - Expect `uot publish` to maintain channel `versions.json`; `list-remote` reads the index, supplements channel-scoped `v<version>` directories, and remains compatible with legacy global `<app-id>/v<version>` releases.
+   - In UOT 0.2.3+, `list-remote` and `DesktopUpdateClient.list_remote_versions()` tolerate per-version NAS/SMB access errors while building the historical list. They should still surface manifest validation and signature failures, and `check()` remains strict for the channel latest manifest.
    - Treat `versions.json.manifest_url` as the authoritative path for historical version pickers. GUI/project adapters should call `DesktopUpdateClient.list_remote_versions()`, `install_remote_version()`, `show-version`, or `get_remote_manifest()` instead of constructing `<app>/<channel>/v<version>/latest.json` themselves.
    - Treat `prepare-version` as copy-and-verify only; use `uot install-prepared` or `uot apply-update` when the project wants UOT's standard runtime to install the selected package and change `current.json`.
    - Use the `package_path` and `manifest_path` returned by `prepare-version`; prepared packages are stored under `<download-dir>/<app>/<channel>/<platform-or-any>/<version>/`.
@@ -112,6 +117,7 @@ Tool projects must not:
    - Use `uot install-prepared --signature-key <key> --dry-run` before applying a package in automation; runtime uses `update.lock` to reject concurrent updates, writes `update-result.json` for successful and failed installs, and refreshes `update-status.json` with phase-level UI status.
    - Use `--wait-pid <old_gui_pid> --wait-timeout <seconds> --restart` when the standard runtime should wait for the old GUI, install, switch, or rollback the selected release, and restart the current entry.
    - Use `DesktopUpdateClient.install_remote_version()`, `switch_installed_version()`, or `rollback()` in GUI code. Use `uot-updater switch-installed --wait-pid <old_gui_pid> --restart` and `uot-updater rollback --wait-pid <old_gui_pid> --restart` only when validating the packaged updater directly.
+   - When packaged PyInstaller updater cold-start time is visible to users, schedule `DesktopUpdateClient.prewarm_updater()` from a non-UI background worker after startup. Treat it as a latency optimization only: it must not block editable document processing, update checks, install/switch/rollback, or replace UOT-owned updater command construction.
    - Expect `update-status.json` to include phase timing fields such as `started_at`, `phase_started_at`, `phase_elapsed_ms`, and `total_elapsed_ms`; use these for slow restart diagnostics.
    - Keep `latest.json` and `versions.json` on NAS only. Bundle `update-endpoint.json` into the app; keep `config/settings*.json` out of final user packages unless it is a deliberately generated runtime-safe settings file. Treat `update-status.json` as runtime state under the install root, not as a packaged file.
 
@@ -123,11 +129,12 @@ Tool projects must not:
    - Use `uot rollback` after a switch or runtime install when `current.json.previous_version` should become active again.
    - Check that update discovery sees the target version.
    - Trigger update from GUI or CLI.
+   - If the app prewarms the packaged updater, benchmark both cold switch and prewarmed switch from a fresh copied install root. Do not assume signing, quarantine, NAS, or `current.json` switching is the root cause without timing data.
    - Confirm `current.json` points to the new version.
    - Confirm `update-result.json.success` is true.
    - Confirm `update-status.json.phase` is `success`; on failure, the GUI should read `phase`, `message`, `version`, and `previous_version` on next launch. Live progress after the old GUI exits requires an updater-owned window or polling process.
    - Confirm no stale `update.lock` remains after a successful or failed runtime update.
-   - Use `uot doctor --install-root <install_root> --archive <doctor.zip>` to collect a support bundle when an update fails.
+   - Use `uot doctor --install-root <install_root> --archive <doctor.zip>` to collect a support bundle when an update fails. In UOT 0.2.2+, inspect `install_root_resolution.requested_install_root`, `normalized_install_root`, `install_root_normalized`, and `suggested_install_root` when paths look like `releases/<version>`.
    - For UNC, `file://`, or mounted paths, keep them only in `nas.root`/`nas.roots` settings. Manifest `package.url` must be a forward-slash relative path, never a UNC path, drive-letter path, `file://` URI, or backslash path.
    - Inspect updater and launcher logs if the GUI does not restart or the version does not switch.
 
@@ -146,7 +153,8 @@ Use this order when implementing or validating a project integration:
 9. Install remote selected versions with `DesktopUpdateClient.install_remote_version()`.
 10. Switch local installed versions with `DesktopUpdateClient.switch_installed_version()`.
 11. Roll back with `DesktopUpdateClient.rollback()`.
-12. Read `read_status()` and `read_result()` on startup or after updater exit.
+12. Optionally prewarm the packaged updater after GUI startup with `DesktopUpdateClient.prewarm_updater()` when cold-start latency affects local switch or restart UX.
+13. Read `read_status()` and `read_result()` on startup or after updater exit.
 
 If a task asks for architecture analysis, include the distinction between:
 

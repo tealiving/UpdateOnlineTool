@@ -158,7 +158,10 @@ class UpdateService:
         versions: list[RemoteVersion] = []
         seen_version_keys: set[tuple[str, str, str]] = set()
         for manifest_path in self._remote_version_manifest_paths(app_id, resolved_channel, platform):
-            manifest = self._load_manifest(manifest_path)
+            try:
+                manifest = self._load_manifest(manifest_path)
+            except OSError:
+                continue
             if manifest.app_id != app_id:
                 raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest app_id mismatch: {manifest.app_id}")
             if manifest.channel != resolved_channel:
@@ -180,7 +183,7 @@ class UpdateService:
                     notes=manifest.notes,
                     manifest=manifest,
                     manifest_path=manifest_path,
-                    package_exists=package_path.is_file(),
+                    package_exists=_safe_is_file(package_path),
                 )
             )
         return sorted(versions, key=lambda item: parse_version_tuple(item.version), reverse=True)
@@ -335,8 +338,11 @@ class UpdateService:
         """读取索引中的版本 manifest；索引不可用时回退目录扫描。"""
         index_path = self.source.versions_index_path(app_id, channel, platform)
         scanned_paths = self.source.iter_version_manifest_paths(app_id, platform, channel)
-        if index_path.is_file():
-            indexed_paths = self._manifest_paths_from_index(index_path)
+        if _safe_is_file(index_path):
+            try:
+                indexed_paths = self._manifest_paths_from_index(index_path)
+            except OSError:
+                indexed_paths = []
             if indexed_paths:
                 return self._merge_manifest_paths(indexed_paths, scanned_paths)
         return scanned_paths
@@ -349,12 +355,12 @@ class UpdateService:
         :return: 去重后的路径列表。
         """
         merged: list[Path] = []
-        seen: set[Path] = set()
+        seen: set[str] = set()
         for path in [*first_paths, *second_paths]:
-            resolved = path.resolve()
-            if resolved in seen:
+            path_key = _path_identity(path)
+            if path_key in seen:
                 continue
-            seen.add(resolved)
+            seen.add(path_key)
             merged.append(path)
         return merged
 
@@ -377,7 +383,7 @@ class UpdateService:
             if not isinstance(manifest_url, str) or not manifest_url.strip():
                 raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "versions index manifest_url must be a non-empty string")
             manifest_path = self.source.resolve_package_path(manifest_url.strip())
-            if manifest_path.is_file():
+            if _safe_is_file(manifest_path):
                 manifest_paths.append(manifest_path)
         return manifest_paths
 
@@ -467,3 +473,24 @@ def _safe_path_component(value: str, fallback: str) -> str:
     if not text:
         return fallback
     return text.replace("/", "_").replace("\\", "_").replace("..", "_")
+
+
+def _safe_is_file(path: Path) -> bool:
+    """判断文件是否存在。
+
+    :param path: 待探测路径。
+    :return: 文件存在返回 True；NAS/SMB 探测异常时返回 False。
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _path_identity(path: Path) -> str:
+    """生成不触发 NAS 访问的路径去重键。
+
+    :param path: 待去重路径。
+    :return: 大小写归一后的路径字符串。
+    """
+    return str(path).casefold()

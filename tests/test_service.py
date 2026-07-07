@@ -324,6 +324,88 @@ def test_service_list_remote_versions_supplements_versions_index(tmp_path: Path)
     assert [item.version for item in versions] == ["1.0.5", "1.0.4"]
 
 
+def test_service_list_remote_versions_skips_inaccessible_index_item(tmp_path: Path, monkeypatch) -> None:
+    """验证 versions.json 中单个不可访问 manifest 不会阻断版本列表。"""
+    _write_manifest(tmp_path, version="1.0.4", content=b"valid")
+    _write_manifest(tmp_path, version="1.0.5", content=b"inaccessible")
+    broken_manifest = tmp_path / "automation-manual-studio" / "stable" / "v1.0.5" / "latest.json"
+    index_path = tmp_path / "automation-manual-studio" / "stable" / "versions.json"
+    index_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "channel": "stable",
+                "platform": "",
+                "versions": [
+                    {
+                        "version": "1.0.5",
+                        "manifest_url": "automation-manual-studio/stable/v1.0.5/latest.json",
+                    },
+                    {
+                        "version": "1.0.4",
+                        "manifest_url": "automation-manual-studio/stable/v1.0.4/latest.json",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_is_file = Path.is_file
+
+    def flaky_is_file(path: Path) -> bool:
+        if path == broken_manifest:
+            raise OSError("simulated smb stat failure")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    versions = service.list_remote_versions(app_id="automation-manual-studio", channel="stable")
+
+    assert [item.version for item in versions] == ["1.0.4"]
+
+
+def test_service_list_remote_versions_skips_unreadable_scanned_manifest(tmp_path: Path, monkeypatch) -> None:
+    """验证扫描路径中单个 manifest 读取失败时跳过该版本。"""
+    _write_manifest(tmp_path, version="1.0.4", content=b"valid")
+    _write_manifest(tmp_path, version="1.0.5", content=b"unreadable")
+    broken_manifest = tmp_path / "automation-manual-studio" / "stable" / "v1.0.5" / "latest.json"
+    original_read_text = Path.read_text
+
+    def flaky_read_text(path: Path, *args, **kwargs) -> str:
+        if path == broken_manifest:
+            raise OSError("simulated smb read failure")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read_text)
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    versions = service.list_remote_versions(app_id="automation-manual-studio", channel="stable")
+
+    assert [item.version for item in versions] == ["1.0.4"]
+
+
+def test_service_list_remote_versions_marks_inaccessible_package_missing(tmp_path: Path, monkeypatch) -> None:
+    """验证 package 存在性探测失败不会阻断版本列表。"""
+    _write_manifest(tmp_path, version="1.0.4", content=b"valid")
+    package_path = tmp_path / "automation-manual-studio" / "stable" / "v1.0.4" / "package.zip"
+    original_is_file = Path.is_file
+
+    def flaky_is_file(path: Path) -> bool:
+        if path == package_path:
+            raise OSError("simulated smb package stat failure")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+    service = UpdateService(UpdateToolSettings(nas_root=tmp_path))
+
+    versions = service.list_remote_versions(app_id="automation-manual-studio", channel="stable")
+
+    assert [item.version for item in versions] == ["1.0.4"]
+    assert versions[0].package_exists is False
+
+
 def test_service_list_remote_versions_deduplicates_indexed_version_over_scanned_path(tmp_path: Path) -> None:
     """验证 versions.json 中的同版本路径优先于扫描到的旧路径。"""
     _write_manifest(tmp_path, version="1.0.8", content=b"direct", notes="direct")

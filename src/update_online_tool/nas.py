@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
@@ -91,7 +92,7 @@ class NasReleaseSource:
         :return: 按路径排序的 manifest 列表。
         """
         app_root = self.root / app_id
-        if not app_root.is_dir():
+        if not _safe_path_check(app_root.is_dir):
             return []
         manifest_paths: list[Path] = []
         if channel:
@@ -127,14 +128,18 @@ class NasReleaseSource:
         :param platform: 可选平台。
         :return: 按路径排序的 manifest 列表。
         """
-        if not root.is_dir():
+        if not _safe_path_check(root.is_dir):
             return []
         manifest_paths: list[Path] = []
-        for version_dir in root.glob("v*"):
-            if not version_dir.is_dir():
+        try:
+            version_dirs = list(root.glob("v*"))
+        except OSError:
+            return []
+        for version_dir in version_dirs:
+            if not _safe_path_check(version_dir.is_dir):
                 continue
             candidate = version_dir / platform / "latest.json" if platform else version_dir / "latest.json"
-            if candidate.is_file():
+            if _safe_path_check(candidate.is_file):
                 manifest_paths.append(candidate)
         return sorted(manifest_paths)
 
@@ -176,3 +181,15 @@ class NasReleaseSource:
         if relative_path.is_absolute() or ".." in relative_path.parts or any(":" in part for part in relative_path.parts):
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe package url: {package_url}")
         return self.root.joinpath(*relative_path.parts)
+
+
+def _safe_path_check(check: Callable[[], bool]) -> bool:
+    """执行 NAS 路径探测。
+
+    :param check: 待执行的路径探测函数。
+    :return: 探测成功返回布尔结果；SMB 异常时返回 False。
+    """
+    try:
+        return bool(check())
+    except OSError:
+        return False

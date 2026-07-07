@@ -88,6 +88,44 @@ def test_nas_merges_channel_and_legacy_versions_without_duplicate(tmp_path: Path
     assert legacy_same not in paths
 
 
+def test_nas_iter_version_manifest_paths_skips_inaccessible_manifest(tmp_path: Path, monkeypatch) -> None:
+    """验证历史版本扫描遇到单个 SMB 探测异常时跳过该 manifest。"""
+    source = NasReleaseSource(tmp_path)
+    valid = tmp_path / "demo-app" / "stable" / "v1.0.5" / "latest.json"
+    broken = tmp_path / "demo-app" / "stable" / "v1.0.6" / "latest.json"
+    valid.parent.mkdir(parents=True)
+    broken.parent.mkdir(parents=True)
+    valid.write_text("{}", encoding="utf-8")
+    broken.write_text("{}", encoding="utf-8")
+    original_is_file = Path.is_file
+
+    def flaky_is_file(path: Path) -> bool:
+        if path == broken:
+            raise OSError("simulated smb stat failure")
+        return original_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+
+    assert source.iter_version_manifest_paths("demo-app", channel="stable") == [valid]
+
+
+def test_nas_iter_version_manifest_paths_treats_glob_failure_as_empty(tmp_path: Path, monkeypatch) -> None:
+    """验证版本目录 glob 失败时按空列表处理。"""
+    source = NasReleaseSource(tmp_path)
+    channel_root = tmp_path / "demo-app" / "stable"
+    channel_root.mkdir(parents=True)
+    original_glob = Path.glob
+
+    def flaky_glob(path: Path, pattern: str):
+        if path == channel_root:
+            raise OSError("simulated smb glob failure")
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", flaky_glob)
+
+    assert source.iter_version_manifest_paths("demo-app", channel="stable") == []
+
+
 def test_nas_rejects_parent_relative_package_url(tmp_path: Path) -> None:
     """验证 package.url 不允许跳出 NAS 根目录。
 
