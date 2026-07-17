@@ -16,6 +16,7 @@ from update_online_tool.install_root import missing_current_json_message, missin
 from update_online_tool.installed import InstalledVersion, list_installed_versions
 from update_online_tool.launcher import LaunchResult, PopenFactory, StandaloneUpdaterLauncher
 from update_online_tool.manifest import UpdateManifest
+from update_online_tool.release_contract import normalize_release_required_paths
 from update_online_tool.service import CheckUpdateResult, ProgressCallback, RemoteVersion, UpdateService
 from update_online_tool.settings import UpdateToolSettings
 from update_online_tool.signature import verify_manifest_signature_with_key_file
@@ -33,6 +34,7 @@ class DesktopUpdateConfig:
     :param download_dir: 准备包下载目录；为空时使用安装根 updates 目录。
     :param signature_key: 可选 manifest 验签公钥。
     :param wait_timeout: 等待旧 GUI 退出超时时间。
+    :param release_required_paths: 宿主 release 必需资源的相对路径。
     :return: None
     """
 
@@ -44,6 +46,17 @@ class DesktopUpdateConfig:
     download_dir: Path | None = None
     signature_key: Path | None = None
     wait_timeout: float = 60.0
+    release_required_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PreparedRemoteUpdate:
+    """已完成下载和 pending 交接、尚未启动 updater 的远端更新。"""
+
+    version: str
+    manifest: UpdateManifest
+    package_path: Path
+    pending_manifest_path: Path
 
 
 class DesktopUpdateClient:
@@ -141,6 +154,31 @@ class DesktopUpdateClient:
         :param cancellation_token: 下载取消令牌。
         :return: updater 启动结果。
         """
+        self.prepare_remote_version(
+            version,
+            old_pid=old_pid,
+            restart=restart,
+            force=force,
+            progress=progress,
+            cancellation_token=cancellation_token,
+        )
+        return self.launch_pending_update()
+
+    def prepare_remote_version(
+        self,
+        version: str,
+        *,
+        old_pid: int | None = None,
+        restart: bool = True,
+        force: bool = False,
+        progress: ProgressCallback | None = None,
+        cancellation_token: CancellationToken | None = None,
+    ) -> PreparedRemoteUpdate:
+        """准备远端版本并写入 pending manifest，但不启动 updater。
+
+        Electron、Tauri 等宿主可在此后保存工作、协调退出，再调用
+        :meth:`launch_pending_update` 触发实际安装。
+        """
         manifest, _ = self.service.get_remote_manifest_with_path(
             app_id=self.config.app_id,
             version=version,
@@ -161,8 +199,20 @@ class DesktopUpdateClient:
             restart=restart,
             force=force,
         )
-        return StandaloneUpdaterLauncher(self._updater_executable(), popen=self._popen).launch(
+        pending_path = StandaloneUpdaterLauncher(self._updater_executable(), popen=self._popen).write_pending(
             pending_payload=pending_payload,
+            pending_manifest_path=self.pending_path(),
+        )
+        return PreparedRemoteUpdate(
+            version=manifest.version,
+            manifest=manifest,
+            package_path=prepared.package_path,
+            pending_manifest_path=pending_path,
+        )
+
+    def launch_pending_update(self) -> LaunchResult:
+        """启动已由 :meth:`prepare_remote_version` 写入的标准 updater。"""
+        return StandaloneUpdaterLauncher(self._updater_executable(), popen=self._popen).launch_existing_pending(
             pending_manifest_path=self.pending_path(),
         )
 
@@ -280,7 +330,14 @@ class DesktopUpdateClient:
 
         :return: 已安装版本列表。
         """
-        return list_installed_versions(install_root=self.install_root())
+        return [
+            item
+            for item in list_installed_versions(
+                install_root=self.install_root(),
+                release_required_paths=normalize_release_required_paths(self.config.release_required_paths),
+            )
+            if item.release_valid
+        ]
 
     def current_version(self) -> str:
         """读取 current.json 当前版本。
@@ -391,6 +448,7 @@ class DesktopUpdateClient:
             "restart_executable": self._current_entry_name(),
             "restart": bool(restart),
             "force": bool(force),
+            "release_required_paths": list(normalize_release_required_paths(self.config.release_required_paths)),
         }
         if old_pid is not None:
             payload["old_pid"] = int(old_pid)

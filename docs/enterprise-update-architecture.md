@@ -6,11 +6,19 @@
 
 UOT 应拥有完整在线更新能力：NAS 配置解析、发布目录约定、manifest 与签名、版本索引、包复制与校验、pending 交接、标准 updater 启动、安装、切换、回滚、进程等待、重启、状态文件和诊断。
 
+新接入默认使用 `uot-bridge → Update Agent → UOT Core → Bootstrap`；旧
+`uot-updater` sidecar 是既有 PyInstaller 兼容路径。每个新 release 应带
+`uot-release.json`，并由 UOT 在安装、切换、回滚前验证。宿主不能以 UI 过滤替代
+此校验。
+
 工具仓库只应提供：
 
 - `app_id`、`platform`、`channel`、`install_root`、settings 路径。
 - GUI 展示、确认弹窗、下载进度展示、后台线程调度。
 - 调用 `DesktopUpdateClient.check()`、`list_remote_versions()`、`install_remote_version()`、`switch_installed_version()`、`rollback()`、`prewarm_updater()`、`read_status()`、`read_result()`。
+
+Electron/Tauri 新接入不直接调用 sidecar API；它们只经受控 Main Process/Rust command
+调用 `uot-bridge`，再交由 Update Agent 和 Bootstrap 完成进程交接。
 
 工具仓库不应解析 `current.json`、拼 updater 命令、寻找 updater exe、构造版本 `latest.json` 路径、修改 `releases/` 或处理 sidecar；updater 预热也应通过 `DesktopUpdateClient` 执行。
 
@@ -28,8 +36,9 @@ UOT 当前采用单机 CLI 发布模型：发布人员在发布机上运行 `uot
 
 状态：符合。注意 manifest 中 `package.url` 必须是 forward-slash 相对路径，不能写 UNC、盘符或 `file://`。
 
-### 2. 打包装配
+### 2. PyInstaller legacy 打包装配
 
+以下 sidecar 布局仅用于旧 PyInstaller 接入；新宿主使用前述 Agent + Bootstrap 契约。
 `assemble-pyinstaller` 生成标准安装根：
 
 - 稳定入口在安装根，例如 `MyTool.exe`。
@@ -67,7 +76,7 @@ UOT 当前采用单机 CLI 发布模型：发布人员在发布机上运行 `uot
 
 状态：符合。下载目录按 app/channel/platform/version 隔离。
 
-### 6. Pending 交接与 updater 启动
+### 6. PyInstaller legacy Pending 交接与 updater 启动
 
 `DesktopUpdateClient.install_remote_version()` 写 `pending-update.json`，并启动安装根 `updater/` 下的标准 updater。pending 中包含 package、manifest、install_root、old_pid、force、restart、wait_timeout 和 signature_key。
 
@@ -79,7 +88,7 @@ UOT 当前采用单机 CLI 发布模型：发布人员在发布机上运行 `uot
 
 ### 7. 安装远端版本
 
-runtime 安装流程：
+runtime 安装流程（PyInstaller legacy sidecar 模式）：
 
 1. 可选等待旧 GUI 退出。
 2. 获取 `update.lock`。

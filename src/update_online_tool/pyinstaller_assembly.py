@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.release_assembly import ReleaseAssemblyAsset, ReleaseAssemblyConfig, assemble_release_layout
 
 
 @dataclass(frozen=True)
@@ -29,6 +28,9 @@ class PyInstallerAssemblyConfig:
     :param settings_path: 需要内置到 release 的 settings 路径。
     :param updater_bundle: 已构建的 uot-updater onefile 或 onedir 产物。
     :param updater_name: 复制到 install_root/updater/ 下的目标名称。
+    :param bootstrap_agent_mode: 是否使用稳定 Bootstrap/Agent 运行时布局。
+    :param agent_bundle: 已构建的 uot-agent 产物；稳定模式必填。
+    :param agent_name: 复制到 install_root/agent/ 下的目标名称。
     :param force: 是否覆盖已有输出目录。
     :return: None
     """
@@ -48,6 +50,9 @@ class PyInstallerAssemblyConfig:
     settings_path: Path | None = None
     updater_bundle: Path | None = None
     updater_name: str = ""
+    bootstrap_agent_mode: bool = False
+    agent_bundle: Path | None = None
+    agent_name: str = ""
     force: bool = False
 
 
@@ -69,6 +74,7 @@ class PyInstallerAssemblyResult:
     release_executable: Path
     platform: str
     updater_path: Path | None = None
+    agent_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,9 @@ def default_pyinstaller_assembly_config(
     settings_path: Path | None = None,
     updater_bundle: Path | None = None,
     updater_name: str = "",
+    bootstrap_agent_mode: bool = False,
+    agent_bundle: Path | None = None,
+    agent_name: str = "",
     force: bool = False,
 ) -> PyInstallerAssemblyConfig:
     """生成默认 PyInstaller 装配配置。
@@ -118,6 +127,9 @@ def default_pyinstaller_assembly_config(
     :param settings_path: settings 路径。
     :param updater_bundle: 标准 updater PyInstaller 产物路径。
     :param updater_name: updater 复制后的名称。
+    :param bootstrap_agent_mode: 是否使用稳定 Bootstrap/Agent 运行时布局。
+    :param agent_bundle: 标准 Agent 产物路径。
+    :param agent_name: Agent 复制后的名称。
     :param force: 是否覆盖已有输出目录。
     :return: 装配配置。
     """
@@ -141,6 +153,9 @@ def default_pyinstaller_assembly_config(
         settings_path=Path(settings_path) if settings_path is not None else None,
         updater_bundle=Path(updater_bundle) if updater_bundle is not None else None,
         updater_name=_optional_text(updater_name),
+        bootstrap_agent_mode=bool(bootstrap_agent_mode),
+        agent_bundle=Path(agent_bundle) if agent_bundle is not None else None,
+        agent_name=_optional_text(agent_name),
         force=force,
     )
 
@@ -162,20 +177,103 @@ def write_updater_pyinstaller_spec(
     :param force: 是否覆盖已有文件。
     :return: spec 生成结果。
     """
+    return _write_runtime_pyinstaller_spec(
+        output_dir=output_dir,
+        name=name,
+        entry_filename="uot_updater_entry.py",
+        entry_module="update_online_tool.updater_cli",
+        onefile=onefile,
+        console=console,
+        force=force,
+    )
+
+
+def write_agent_pyinstaller_spec(
+    *,
+    output_dir: Path,
+    name: str = "uot-agent",
+    onefile: bool = False,
+    console: bool = True,
+    force: bool = False,
+) -> UpdaterPyInstallerSpecResult:
+    """生成独立 Update Agent 的 PyInstaller 入口脚本和 spec。"""
+    return _write_runtime_pyinstaller_spec(
+        output_dir=output_dir,
+        name=name,
+        entry_filename="uot_agent_entry.py",
+        entry_module="update_online_tool.agent_cli",
+        onefile=onefile,
+        console=console,
+        force=force,
+    )
+
+
+def write_bootstrap_pyinstaller_spec(
+    *,
+    output_dir: Path,
+    name: str = "uot-bootstrap",
+    onefile: bool = False,
+    console: bool = True,
+    force: bool = False,
+) -> UpdaterPyInstallerSpecResult:
+    """生成稳定 Bootstrap 的 PyInstaller 入口脚本和 spec。"""
+    return _write_runtime_pyinstaller_spec(
+        output_dir=output_dir,
+        name=name,
+        entry_filename="uot_bootstrap_entry.py",
+        entry_module="update_online_tool.bootstrap_cli",
+        onefile=onefile,
+        console=console,
+        force=force,
+    )
+
+
+def write_bridge_pyinstaller_spec(
+    *,
+    output_dir: Path,
+    name: str = "uot-bridge",
+    onefile: bool = False,
+    console: bool = True,
+    force: bool = False,
+) -> UpdaterPyInstallerSpecResult:
+    """生成供 Electron/Tauri 调用的独立 JSON bridge 打包入口。"""
+    return _write_runtime_pyinstaller_spec(
+        output_dir=output_dir,
+        name=name,
+        entry_filename="uot_bridge_entry.py",
+        entry_module="update_online_tool.bridge_cli",
+        onefile=onefile,
+        console=console,
+        force=force,
+    )
+
+
+def _write_runtime_pyinstaller_spec(
+    *,
+    output_dir: Path,
+    name: str,
+    entry_filename: str,
+    entry_module: str,
+    onefile: bool,
+    console: bool,
+    force: bool,
+) -> UpdaterPyInstallerSpecResult:
+    """生成一个 UOT 稳定运行时的可打包入口和 spec。"""
     root = Path(output_dir)
     product_name = _require_text(name, "name")
     root.mkdir(parents=True, exist_ok=True)
-    entry_script = root / "uot_updater_entry.py"
+    entry_script = root / entry_filename
     spec_path = root / f"{product_name}.spec"
     for path in (entry_script, spec_path):
         if path.exists() and not force:
             raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {path}")
-    entry_script.write_text(_updater_entry_script(), encoding="utf-8")
+    entry_script.write_text(_runtime_entry_script(entry_module), encoding="utf-8")
     spec_path.write_text(
-        _updater_spec_text(
+        _runtime_spec_text(
             entry_script=entry_script,
             spec_dir=root,
             name=product_name,
+            entry_module=entry_module,
             onefile=onefile,
             console=console,
         ),
@@ -213,34 +311,60 @@ def assemble_pyinstaller_release(config: PyInstallerAssemblyConfig) -> PyInstall
         platform,
         config.launcher_entry_name,
     )
-    _prepare_output_dir(config.install_output, force=config.force)
-    _prepare_output_dir(config.update_output, force=config.force)
-
-    install_release_dir = config.install_output / "releases" / config.version
-    shutil.copytree(config.release_dir, install_release_dir, symlinks=True)
-    _normalize_executable(install_release_dir, release_source_exe.name, desired_entry)
-    shutil.copytree(config.launcher_dir, config.install_output, dirs_exist_ok=True, symlinks=True)
-    _normalize_executable(config.install_output, launcher_source_exe.name, desired_entry)
-    _write_current_json(config.install_output / "current.json", config.app_id, config.version, desired_entry, platform)
-    _copy_settings_if_requested(config.settings_path, install_release_dir)
-    updater_path = _copy_updater_bundle(config.updater_bundle, config.install_output / "updater", config.updater_name)
-
-    shutil.copytree(config.release_dir, config.update_output, dirs_exist_ok=True, symlinks=True)
-    _normalize_executable(config.update_output, release_source_exe.name, desired_entry)
-    update_launcher_dir = config.update_output / "_launcher"
-    shutil.copytree(config.launcher_dir, update_launcher_dir, symlinks=True)
-    _normalize_executable(update_launcher_dir, launcher_source_exe.name, desired_entry)
-    _copy_settings_if_requested(config.settings_path, config.update_output)
-    _copy_updater_bundle(config.updater_bundle, config.update_output / "updater", config.updater_name)
+    assets = _pyinstaller_assets(
+        settings_path=config.settings_path,
+        release_entry=release_source_exe,
+        desired_entry=desired_entry,
+        platform=platform,
+    )
+    assembled = assemble_release_layout(
+        ReleaseAssemblyConfig(
+            version=config.version,
+            app_id=config.app_id,
+            release_dir=config.release_dir,
+            launcher_dir=config.launcher_dir,
+            install_output=config.install_output,
+            update_output=config.update_output,
+            platform=platform,
+            entry_path=desired_entry,
+            release_entry_path=release_source_exe.name,
+            launcher_entry_path=launcher_source_exe.name,
+            updater_bundle=config.updater_bundle,
+            updater_name=config.updater_name,
+            bootstrap_agent_mode=config.bootstrap_agent_mode,
+            agent_bundle=config.agent_bundle,
+            agent_name=config.agent_name,
+            assets=assets,
+            force=config.force,
+        )
+    )
 
     return PyInstallerAssemblyResult(
-        install_root=config.install_output,
-        update_root=config.update_output,
-        launcher_executable=config.install_output / desired_entry,
-        release_executable=install_release_dir / desired_entry,
+        install_root=assembled.install_root,
+        update_root=assembled.update_root,
+        launcher_executable=assembled.launcher_entry,
+        release_executable=assembled.release_entry,
         platform=platform,
-        updater_path=updater_path,
+        updater_path=assembled.updater_path,
+        agent_path=assembled.agent_path,
     )
+
+
+def _pyinstaller_assets(
+    *,
+    settings_path: Path | None,
+    release_entry: Path,
+    desired_entry: str,
+    platform: str,
+) -> tuple[ReleaseAssemblyAsset, ...]:
+    """将 PyInstaller 内置 settings 映射为通用 release 资源。"""
+    if settings_path is None:
+        return ()
+    if platform == "macos" and release_entry.suffix == ".app":
+        target = f"{desired_entry}/Contents/Resources/config/settings.json"
+    else:
+        target = "_internal/config/settings.json"
+    return (ReleaseAssemblyAsset(Path(settings_path), target),)
 
 
 def _normalize_version(version: str) -> str:
@@ -414,104 +538,6 @@ def _first_existing(candidates: list[Path | None], fallback: object, message: st
     raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, message)
 
 
-def _prepare_output_dir(path: Path, *, force: bool) -> None:
-    """准备输出目录。
-
-    :param path: 输出目录。
-    :param force: 是否覆盖已有目录。
-    :return: None
-    """
-    if path.exists():
-        if not force:
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {path}")
-        shutil.rmtree(path)
-    path.mkdir(parents=True)
-
-
-def _normalize_executable(root: Path, source_name: str, desired_name: str) -> None:
-    """把内部构建 exe 名称归一化为产品入口名称。
-
-    :param root: 归一化目录。
-    :param source_name: 当前 exe 名称。
-    :param desired_name: 目标 exe 名称。
-    :return: None
-    """
-    source_path = root / source_name
-    desired_path = root / desired_name
-    if not _is_entry_path(source_path):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"executable not found: {source_path}")
-    if source_path == desired_path:
-        return
-    if desired_path.exists():
-        if desired_path.is_dir():
-            shutil.rmtree(desired_path)
-        else:
-            desired_path.unlink()
-    source_path.rename(desired_path)
-
-
-def _write_current_json(path: Path, app_id: str, version: str, desired_entry: str, platform: str) -> None:
-    """写入标准 current.json。
-
-    :param path: current.json 路径。
-    :param app_id: 应用标识。
-    :param version: 当前版本。
-    :param desired_entry: release GUI 入口名称。
-    :param platform: 目标平台。
-    :return: None
-    """
-    payload = {
-        "app_id": app_id,
-        "version": version,
-        "release_dir": f"releases/{version}",
-        "executable": desired_entry,
-        "entry": {
-            "kind": _entry_kind(desired_entry),
-            "path": desired_entry,
-            "platform": platform,
-        },
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def _copy_settings_if_requested(settings_path: Path | None, bundle_root: Path) -> None:
-    """按需复制 settings 到 PyInstaller 内置配置目录。
-
-    :param settings_path: settings 源路径。
-    :param bundle_root: PyInstaller bundle 根目录。
-    :return: None
-    """
-    if settings_path is None:
-        return
-    if not settings_path.is_file():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"settings not found: {settings_path}")
-    app_bundles = sorted(path for path in bundle_root.glob("*.app") if _is_macos_app_bundle(path))
-    if app_bundles:
-        target = app_bundles[0] / "Contents" / "Resources" / "config" / "settings.json"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(settings_path, target)
-        return
-    target = bundle_root / "_internal" / "config" / "settings.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(settings_path, target)
-
-
-def _copy_updater_bundle(updater_bundle: Path | None, updater_root: Path, updater_name: str) -> Path | None:
-    """把已构建 updater 产物复制到 install_root/updater/。"""
-    if updater_bundle is None:
-        return None
-    source = Path(updater_bundle)
-    if not source.exists():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"updater bundle not found: {source}")
-    updater_root.mkdir(parents=True, exist_ok=True)
-    target = updater_root / (updater_name or source.name)
-    if source.is_dir():
-        shutil.copytree(source, target, symlinks=True)
-        return target
-    shutil.copy2(source, target)
-    return target
-
-
 def _has_macos_app_bundle(bundle_dir: Path) -> bool:
     """判断目录是否包含 macOS .app bundle。"""
     if _is_macos_app_bundle(bundle_dir):
@@ -532,30 +558,26 @@ def _is_macos_app_bundle(path: Path) -> bool:
     return macos_dir.is_dir() and any(candidate.is_file() for candidate in macos_dir.iterdir())
 
 
-def _entry_kind(entry_name: str) -> str:
-    """生成 current.json entry.kind。"""
-    return "app_bundle" if entry_name.endswith(".app") else "executable"
-
-
-def _updater_entry_script() -> str:
-    """生成 uot-updater PyInstaller 入口脚本。"""
+def _runtime_entry_script(entry_module: str) -> str:
+    """生成 UOT 稳定运行时 PyInstaller 入口脚本。"""
     return (
-        "from update_online_tool.updater_cli import main\n\n"
+        f"from {entry_module} import main\n\n"
         "\n"
         "if __name__ == \"__main__\":\n"
         "    raise SystemExit(main())\n"
     )
 
 
-def _updater_spec_text(
+def _runtime_spec_text(
     *,
     entry_script: Path,
     spec_dir: Path,
     name: str,
+    entry_module: str,
     onefile: bool,
     console: bool,
 ) -> str:
-    """生成 uot-updater PyInstaller spec 文本。"""
+    """生成 UOT 稳定运行时 PyInstaller spec 文本。"""
     exe_block = _updater_onefile_exe_block(name=name, console=console) if onefile else _updater_onedir_exe_block(
         name=name,
         console=console,
@@ -563,7 +585,7 @@ def _updater_spec_text(
     return f"""# -*- mode: python ; coding: utf-8 -*-
 
 hiddenimports = [
-    "update_online_tool.updater_cli",
+    {entry_module!r},
     "update_online_tool.signature",
     "cryptography.hazmat.primitives.asymmetric.ed25519",
     "cryptography.hazmat.primitives.serialization",

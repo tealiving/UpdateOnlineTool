@@ -153,6 +153,62 @@ def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) 
     ]
 
 
+def test_desktop_client_can_prepare_before_starting_updater(tmp_path: Path) -> None:
+    """宿主可先准备 pending，再在退出协调完成后启动 updater。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0", entry_name="MyTool.exe")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    nas_root = tmp_path / "nas"
+    _write_manifest(nas_root, version="1.1.0", content=b"package")
+    calls: list[list[str]] = []
+    client = _client(install_root=install_root, nas_root=nas_root, popen=_popen_recorder(calls))
+
+    prepared = client.prepare_remote_version("1.1.0", old_pid=123, restart=True)
+
+    assert prepared.version == "1.1.0"
+    assert prepared.package_path.read_bytes() == b"package"
+    assert prepared.pending_manifest_path == client.pending_path()
+    assert calls == []
+
+    result = client.launch_pending_update()
+
+    assert result.started is True
+    assert calls == [
+        [
+            str(updater),
+            "apply",
+            "--pending",
+            str(client.pending_path()),
+            "--restart",
+            "--entry-name",
+            "MyTool.exe",
+            "--wait-pid",
+            "123",
+            "--wait-timeout",
+            "60.0",
+        ]
+    ]
+
+
+def test_desktop_client_prepares_for_agent_handoff_without_updater(tmp_path: Path) -> None:
+    """Agent 模式准备 pending 时不应依赖旧 updater sidecar。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0", entry_name="MyTool.exe")
+    nas_root = tmp_path / "nas"
+    _write_manifest(nas_root, version="1.1.0", content=b"package")
+    client = _client(install_root=install_root, nas_root=nas_root)
+
+    prepared = client.prepare_remote_version("1.1.0", old_pid=123, restart=True)
+
+    assert prepared.version == "1.1.0"
+    assert prepared.package_path.read_bytes() == b"package"
+    assert prepared.pending_manifest_path == client.pending_path()
+    assert client.pending_path().is_file()
+    with pytest.raises(UpdateError) as error:
+        client.launch_pending_update()
+    assert error.value.code is UpdateErrorCode.UPDATER_NOT_FOUND
+
+
 def test_desktop_client_switches_installed_version_through_updater(tmp_path: Path) -> None:
     """验证桌面客户端通过标准 updater 切换本地版本。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")

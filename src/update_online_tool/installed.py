@@ -14,6 +14,7 @@ from uuid import uuid4
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.install_root import missing_current_json_message, normalize_install_root
 from update_online_tool.locks import runtime_lock
+from update_online_tool.release_contract import normalize_release_required_paths, validate_release_artifact
 from update_online_tool.versioning import parse_version_tuple
 
 
@@ -36,6 +37,8 @@ class InstalledVersion:
     entry_exists: bool
     entry_kind: str
     is_current: bool
+    release_valid: bool = True
+    validation_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -63,12 +66,18 @@ class MigrationResult:
         }
 
 
-def list_installed_versions(*, install_root: Path, entry_name: str = "") -> list[InstalledVersion]:
+def list_installed_versions(
+    *,
+    install_root: Path,
+    entry_name: str = "",
+    release_required_paths: tuple[str, ...] | list[str] = (),
+) -> list[InstalledVersion]:
     """列出安装根已存在的 release 版本。
 
     :param install_root: 安装根目录。
     :param entry_name: 可选入口名；为空时从 current.json 推断。
-    :return: 已安装版本列表，按版本倒序排列。
+    :param release_required_paths: 宿主要求每个 release 都存在的相对资源路径。
+    :return: 已安装版本列表，按版本倒序排列；不完整 release 会保留在结果中并标记无效。
     """
     root = normalize_install_root(Path(install_root))
     releases_root = root / "releases"
@@ -76,6 +85,9 @@ def list_installed_versions(*, install_root: Path, entry_name: str = "") -> list
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"releases directory not found: {releases_root}")
     current_payload = _read_current_json(root, required=False)
     current_version = str(current_payload.get("version", "")).strip() if current_payload else ""
+    required_paths = normalize_release_required_paths(release_required_paths)
+    current_app_id = str(current_payload.get("app_id", "")).strip() if current_payload else ""
+    current_platform = _current_platform(current_payload) if current_payload else ""
     versions: list[InstalledVersion] = []
     for release_dir in releases_root.iterdir():
         if not release_dir.is_dir():
@@ -87,14 +99,34 @@ def list_installed_versions(*, install_root: Path, entry_name: str = "") -> list
             release_dir=release_dir,
         )
         entry_path = release_dir / resolved_entry_name
+        entry_exists = _is_entry_path(entry_path)
+        release_valid = entry_exists
+        validation_error = ""
+        if entry_exists:
+            try:
+                validate_release_artifact(
+                    release_dir=release_dir,
+                    version=version,
+                    entry_path=resolved_entry_name,
+                    app_id=current_app_id,
+                    platform=current_platform,
+                    required_paths=required_paths,
+                )
+            except UpdateError as exc:
+                release_valid = False
+                validation_error = exc.message
+        else:
+            validation_error = f"release entry not found: {entry_path}"
         versions.append(
             InstalledVersion(
                 version=version,
                 release_dir=release_dir,
                 entry_path=entry_path,
-                entry_exists=_is_entry_path(entry_path),
+                entry_exists=entry_exists,
                 entry_kind=_entry_kind(resolved_entry_name),
                 is_current=version == current_version,
+                release_valid=release_valid,
+                validation_error=validation_error,
             )
         )
     return sorted(versions, key=lambda item: (parse_version_tuple(item.version), item.version), reverse=True)
@@ -186,6 +218,7 @@ def switch_installed_version(
     entry_name: str = "",
     app_id: str = "",
     platform: str = "",
+    release_required_paths: tuple[str, ...] | list[str] = (),
     use_lock: bool = True,
 ) -> InstalledVersion:
     """切换安装根 current.json 到已安装版本。
@@ -195,11 +228,13 @@ def switch_installed_version(
     :param entry_name: 可选入口名；为空时从 current.json 推断。
     :param app_id: 可选应用标识；为空时沿用 current.json。
     :param platform: 可选平台；为空时沿用 current.json entry.platform。
+    :param release_required_paths: 宿主要求目标 release 存在的相对资源路径。
     :param use_lock: 是否使用安装根 update.lock；runtime 已持锁时传 False。
     :return: 切换后的版本信息。
     """
     root = normalize_install_root(Path(install_root))
     target_version = str(version or "").strip()
+    required_paths = normalize_release_required_paths(release_required_paths)
     if not target_version:
         raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "version must be non-empty")
     lock = runtime_lock(root, action="switch_installed") if use_lock else nullcontext()
@@ -220,6 +255,14 @@ def switch_installed_version(
         if not resolved_app_id:
             raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "app_id must be provided or present in current.json")
         resolved_platform = str(platform or _current_platform(current_payload)).strip()
+        validate_release_artifact(
+            release_dir=release_dir,
+            version=target_version,
+            entry_path=resolved_entry_name,
+            app_id=resolved_app_id,
+            platform=resolved_platform,
+            required_paths=required_paths,
+        )
         previous_version = str(current_payload.get("version", "")).strip()
         payload: dict[str, object] = dict(current_payload)
         entry_payload = current_payload.get("entry")
@@ -250,6 +293,7 @@ def switch_installed_version(
             entry_exists=True,
             entry_kind=_entry_kind(resolved_entry_name),
             is_current=True,
+            release_valid=True,
         )
 
 

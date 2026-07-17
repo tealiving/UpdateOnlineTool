@@ -5,7 +5,21 @@ from __future__ import annotations
 from update_online_tool.diagnostics import collect_diagnostics, write_diagnostic_archive
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.downloader import CancellationToken, PreparedPackage
-from update_online_tool.desktop import DesktopUpdateClient, DesktopUpdateConfig
+from update_online_tool.agent import (
+    AgentLaunchResult,
+    AgentRequest,
+    AgentRunResult,
+    UpdateAgent,
+    UpdateAgentLauncher,
+    create_apply_request,
+    create_rollback_request,
+    create_switch_request,
+    read_agent_request,
+    read_agent_status,
+    write_agent_handoff,
+    write_agent_request,
+)
+from update_online_tool.desktop import DesktopUpdateClient, DesktopUpdateConfig, PreparedRemoteUpdate
 from update_online_tool.installed import (
     InstalledVersion,
     MigrationResult,
@@ -28,7 +42,25 @@ from update_online_tool.pyinstaller_assembly import (
     UpdaterPyInstallerSpecResult,
     assemble_pyinstaller_release,
     default_pyinstaller_assembly_config,
+    write_agent_pyinstaller_spec,
+    write_bootstrap_pyinstaller_spec,
+    write_bridge_pyinstaller_spec,
     write_updater_pyinstaller_spec,
+)
+from update_online_tool.release_assembly import (
+    ReleaseAssemblyAsset,
+    ReleaseAssemblyConfig,
+    ReleaseAssemblyResult,
+    assemble_release_layout,
+    create_release_package,
+)
+from update_online_tool.release_contract import (
+    RELEASE_CONTRACT_FILENAME,
+    ReleaseArtifactContract,
+    normalize_release_required_paths,
+    read_release_contract,
+    validate_release_artifact,
+    write_release_contract,
 )
 from update_online_tool.runtime import (
     RuntimeResult,
@@ -59,17 +91,30 @@ from update_online_tool.signature import (
 )
 from update_online_tool.versioning import UpdateDecision
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 __all__ = [
     "UpdateError",
     "UpdateErrorCode",
+    "AgentLaunchResult",
+    "AgentRequest",
+    "AgentRunResult",
+    "UpdateAgent",
+    "UpdateAgentLauncher",
+    "create_apply_request",
+    "create_rollback_request",
+    "create_switch_request",
+    "read_agent_request",
+    "read_agent_status",
+    "write_agent_handoff",
+    "write_agent_request",
     "collect_diagnostics",
     "write_diagnostic_archive",
     "CancellationToken",
     "PreparedPackage",
     "DesktopUpdateClient",
     "DesktopUpdateConfig",
+    "PreparedRemoteUpdate",
     "InstalledVersion",
     "MigrationResult",
     "list_installed_versions",
@@ -90,7 +135,21 @@ __all__ = [
     "UpdaterPyInstallerSpecResult",
     "assemble_pyinstaller_release",
     "default_pyinstaller_assembly_config",
+    "write_agent_pyinstaller_spec",
+    "write_bootstrap_pyinstaller_spec",
+    "write_bridge_pyinstaller_spec",
     "write_updater_pyinstaller_spec",
+    "ReleaseAssemblyAsset",
+    "ReleaseAssemblyConfig",
+    "ReleaseAssemblyResult",
+    "assemble_release_layout",
+    "create_release_package",
+    "RELEASE_CONTRACT_FILENAME",
+    "ReleaseArtifactContract",
+    "normalize_release_required_paths",
+    "read_release_contract",
+    "validate_release_artifact",
+    "write_release_contract",
     "RuntimeResult",
     "RuntimeStatus",
     "apply_pending_update",

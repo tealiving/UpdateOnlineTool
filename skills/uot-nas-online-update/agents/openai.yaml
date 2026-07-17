@@ -1,0 +1,4 @@
+interface:
+  display_name: "UOT NAS Online Update"
+  short_description: "Build secure NAS desktop updates with UOT."
+  default_prompt: "Help this desktop application use UOT for NAS-based online updates."

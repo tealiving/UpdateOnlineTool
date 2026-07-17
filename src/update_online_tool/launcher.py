@@ -54,15 +54,36 @@ class StandaloneUpdaterLauncher:
         :param pending_manifest_path: pending manifest 路径。
         :return: 启动结果。
         """
-        if not self.updater_executable.is_file():
-            raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"updater not found: {self.updater_executable}")
-        pending_manifest_path = Path(pending_manifest_path)
-        pending_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        pending_manifest_path.write_text(
+        self.write_pending(pending_payload=pending_payload, pending_manifest_path=pending_manifest_path)
+        return self.launch_existing_pending(pending_manifest_path=pending_manifest_path)
+
+    def write_pending(self, *, pending_payload: dict[str, object], pending_manifest_path: Path) -> Path:
+        """写入 pending manifest，但不启动或校验 updater。
+
+        Bootstrap/Agent 模式由独立 Agent 消费 pending 文件，不携带旧
+        ``uot-updater`` sidecar；仅在真正启动标准 updater 时才校验它。
+        """
+        pending_path = Path(pending_manifest_path)
+        pending_path.parent.mkdir(parents=True, exist_ok=True)
+        pending_path.write_text(
             json.dumps(pending_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        command = [str(self.updater_executable), "apply", "--pending", str(pending_manifest_path)]
+        return pending_path
+
+    def launch_existing_pending(self, *, pending_manifest_path: Path) -> LaunchResult:
+        """启动已写入的 pending manifest。"""
+        self._ensure_updater_exists()
+        pending_path = Path(pending_manifest_path)
+        try:
+            pending_payload = json.loads(pending_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"pending manifest not found: {pending_path}") from exc
+        except json.JSONDecodeError as exc:
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"pending manifest is not valid JSON: {pending_path}") from exc
+        if not isinstance(pending_payload, dict):
+            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"pending manifest must be a JSON object: {pending_path}")
+        command = [str(self.updater_executable), "apply", "--pending", str(pending_path)]
         restart = _coerce_bool(pending_payload.get("restart"), default=True)
         if restart:
             command.append("--restart")
@@ -94,8 +115,13 @@ class StandaloneUpdaterLauncher:
         return LaunchResult(
             started=True,
             updater_pid=getattr(process, "pid", None),
-            pending_manifest_path=pending_manifest_path,
+            pending_manifest_path=pending_path,
         )
+
+    def _ensure_updater_exists(self) -> None:
+        """确认独立 updater 已就绪。"""
+        if not self.updater_executable.is_file():
+            raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"updater not found: {self.updater_executable}")
 
 
 def _coerce_positive_int(value: object) -> int | None:

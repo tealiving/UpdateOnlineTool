@@ -124,6 +124,39 @@ def test_switch_installed_version_rejects_missing_release(tmp_path: Path) -> Non
     assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
 
 
+def test_list_installed_versions_marks_release_invalid_when_required_resource_is_missing(tmp_path: Path) -> None:
+    """验证版本选择器可以由 UOT 标记缺少宿主资源的历史 release。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
+    required_path = "resources/uot/settings.json"
+    settings_path = install_root / "releases" / "1.0.5" / required_path
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text("{}", encoding="utf-8")
+
+    versions = list_installed_versions(install_root=install_root, release_required_paths=(required_path,))
+
+    validity = {item.version: (item.release_valid, item.validation_error) for item in versions}
+    assert validity["1.0.5"] == (True, "")
+    assert validity["1.0.4"][0] is False
+    assert "required release path not found" in validity["1.0.4"][1]
+
+
+def test_switch_installed_version_rejects_release_without_required_resource(tmp_path: Path) -> None:
+    """验证直接调用 UOT 切换也不能绕过宿主完整性要求。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
+
+    with pytest.raises(UpdateError) as error:
+        switch_installed_version(
+            install_root=install_root,
+            version="1.0.4",
+            release_required_paths=("resources/uot/settings.json",),
+        )
+
+    assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
+    assert "required release path not found" in error.value.message
+
+
 def test_switch_installed_version_rejects_existing_update_lock(tmp_path: Path) -> None:
     """验证本地版本切换复用安装根 update.lock。"""
     install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")

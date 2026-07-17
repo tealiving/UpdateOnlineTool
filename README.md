@@ -2,6 +2,19 @@
 
 基于 NAS 的桌面工具在线升级 SDK 和 CLI。
 
+## 文档导航
+
+- [用户与工具接入指南](docs/user-guide.md)：从安装、配置、打包、发布到客户端更新的完整流程和流程图。
+- [对接指南](docs/integration-guide.md)：接入方配置、PyInstaller 装配和 SDK 边界。
+- [技术架构](docs/technical-architecture.md)：模块职责、数据契约和运行时流程图。
+- [PyQt 集成](docs/pyqt-integration.md)：QThread、pending manifest 和 GUI 交互细节。
+- [多桌面运行时架构](docs/multi-runtime-architecture.md)：Electron/Tauri bridge 与通用 release 装配边界。
+- [Electron 受控接入参考](docs/electron-uot-reference.md)：Main Process、preload IPC 与 Agent handoff 示例。
+- [PyQt Agent 迁移指南](docs/pyqt-agent-migration.md)：保留 Qt UI 边界并迁移到稳定 Bootstrap/Agent。
+- [Rust Agent 决策记录](docs/adr/0004-defer-unified-rust-agent.md)：以量化门槛决定是否替换 Python Agent。
+- [架构决策记录](docs/adr/)：更新内核、release 契约和原生安装包交付边界。
+- [原生 Bootstrap](native/uot-bootstrap/README.md)：Rust 稳定启动入口的构建与接入契约。
+
 
 https://github.com/user-attachments/assets/18b6dd1b-5cea-409e-9ca0-1f556fee3ff2
 
@@ -9,29 +22,72 @@ https://github.com/user-attachments/assets/18b6dd1b-5cea-409e-9ca0-1f556fee3ff2
 
 支持：
 
-- Python 桌面工具项目。
-- PyQt 工具项目作为首个已落地的运行时集成目标。
+- PyQt/PySide 与其他 Python 桌面工具通过 `DesktopUpdateClient` 接入。
+- Electron 通过 Main Process + `uot-bridge` 接入。
+- Tauri 通过受控 Rust command + `uot-bridge` 接入。
+- 其他桌面宿主通过同一 JSON bridge、Update Agent 与稳定 Bootstrap 接入。
 - NAS 发布根目录。
 - 操作系统托管的 SMB 凭证。
 - `latest.json`。
 - zip 升级包。
-- 独立 updater 可执行文件。
+- 旧式独立 updater 可执行文件兼容路径，以及新的 Update Agent + 稳定 Bootstrap 交接路径。
+- `uot-bridge` 本地 JSON bridge，供 Electron Main Process 或受控 Tauri command 调用。
 
 首版暂不支持：
 
 - Qt Installer Framework。
 - GitHub、Gitee、DevOps 或 HTTP 更新源。
 - 在 settings 中保存 API token、deploy key 或账户凭证。
-- Electron、Rust、Tauri 或跨框架一等适配器。
+- `electron-builder`、Tauri 打包插件或各框架自带 HTTP updater 的替代实现。
 - 内置 GUI 组件。
 
-SDK 是纯 Python 后端，不导入 PyQt。它是“已支持 PyQt 对接”，不是“只能用于 PyQt”。非 Python 前端可以通过 Python sidecar 或 `uot` CLI 间接使用，但 Electron/Rust/Tauri 的一等适配器当前还未提供。
+SDK 是纯 Python 后端，不导入 PyQt。它是“已支持 PyQt 对接”，不是“只能用于 PyQt”。Electron/Tauri 等非 Python 宿主可经 `uot-bridge` 完成检查、准备、启动 updater、读取状态和回滚；bridge 是本地子进程，不是服务或 MCP。宿主仍负责 IPC、界面、构建产物与平台签名。
 
 ## 安装
 
 ```bash
-pip install -e D:\tealiving\peoject\UpdateOnlineTool
+python -m pip install -e .
 ```
+
+## Electron / Tauri 对接
+
+非 Python 宿主只能由受控宿主层调用 bridge：Electron 使用 Main Process + preload IPC，Tauri 使用 Rust command；Renderer/WebView 不得读取 NAS 或执行 bridge。可选更新采用两阶段交接流程，先下载并验证，再由独立 Agent 执行安装：
+
+```bash
+uot-bridge check --config uot-bridge.json
+uot-bridge prepare --config uot-bridge.json --version 1.2.0 --old-pid <pid>
+uot-bridge agent-start --config uot-bridge.json --old-pid <pid>
+# Agent 返回 ready 后，宿主保存数据：
+uot-bridge agent-handoff --config uot-bridge.json --request <request-path>
+# 宿主退出；Agent 等待旧 PID、安装并由稳定 Bootstrap 拉起新 release
+```
+
+`agent-start` 返回 ready 前宿主不得退出；`agent-handoff` 之后宿主不得再直接修改
+`current.json` 或启动 release。bridge 可通过 `release_required_paths` 声明 settings、
+onedir bridge 等必需资源；UOT 会在安装、切换和回滚前重复校验。新 release 还应在根
+目录携带 `uot-release.json`，以绑定应用、版本、平台与入口。完整配置字段、发布包结构和平台边界见
+[多桌面运行时架构](docs/multi-runtime-architecture.md)。稳定入口可使用 Python
+参考实现或 [Rust 原生 Bootstrap](native/uot-bootstrap/README.md)；后者只启动
+`current.json` 指向的 release，不能替代 UOT Core 或 Update Agent。
+
+## 开发与测试
+
+本项目使用 Python 3.11+、`src` 布局和 pytest。首次设置开发环境后，可运行：
+
+```bash
+python -m pip install -e .
+python -m pytest -q
+```
+
+常用的定向测试和 CLI 调试命令：
+
+```bash
+python -m pytest tests/test_cli.py -q
+uot --help
+uot init --nas-root /path/to/nas --skip-nas-check
+```
+
+核心实现位于 `src/update_online_tool/`，测试位于 `tests/`，配置模板位于 `config/`，技术说明和接入指南位于 `docs/`。新增行为应在对应的 `tests/test_<behavior>.py` 中补充测试；涉及 NAS 的测试优先使用临时目录，不依赖真实共享盘。
 
 ## 配置
 
@@ -440,7 +496,7 @@ uot doctor \
   --archive diagnostics/doctor.zip
 ```
 
-诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。NAS 根路径可以是 UNC、`file://` 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符、`file://` 或反斜杠路径。诊断 zip 只包含报告、运行态 JSON、锁文件和日志，不包含 `config/settings*.json` 或签名私钥。
+诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。启用 Bootstrap/Agent 模式时，另含 `operations/` 中每个 request、handoff、status 的阶段与错误摘要；支持包会收集脱敏 request 摘要及对应 handoff/status 文件。operation request 只能保存路径、PID、超时和 Bootstrap 命令，不得传入凭据或私钥。NAS 根路径可以是 UNC、`file://` 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符、`file://` 或反斜杠路径。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
 
 企业级执行链路：
 
@@ -553,23 +609,28 @@ uot init
 本仓库内置 Codex/OpenCode 可用的 UOT 接入 skill：
 
 ```text
-skills/pyqt-nas-online-update/
+skills/uot-nas-online-update/
 ```
+
+该 Skill 面向 PyQt/PySide、Electron、Tauri 和其他桌面宿主。它按运行时选择
+`DesktopUpdateClient` 或受控 `uot-bridge`，并规定宿主不得重写 NAS、hash、
+`current.json` 或安装事务。原 `pyqt-nas-online-update` 名称已废弃；仅
+`update_online_tool.pyqt_runtime` 仍作为旧 PyQt updater 的兼容 API 保留。
 
 从当前 checkout 安装到本机 Codex：
 
 ```bash
 mkdir -p ~/.codex/skills
-rm -rf ~/.codex/skills/pyqt-nas-online-update
-cp -R skills/pyqt-nas-online-update ~/.codex/skills/
+rm -rf ~/.codex/skills/uot-nas-online-update ~/.codex/skills/pyqt-nas-online-update
+cp -R skills/uot-nas-online-update ~/.codex/skills/
 ```
 
 从当前 checkout 安装到本机 OpenCode：
 
 ```bash
 mkdir -p ~/.config/opencode/skills
-rm -rf ~/.config/opencode/skills/pyqt-nas-online-update
-cp -R skills/pyqt-nas-online-update ~/.config/opencode/skills/
+rm -rf ~/.config/opencode/skills/uot-nas-online-update ~/.config/opencode/skills/pyqt-nas-online-update
+cp -R skills/uot-nas-online-update ~/.config/opencode/skills/
 ```
 
 直接从 GitHub URL 安装：
@@ -578,34 +639,38 @@ cp -R skills/pyqt-nas-online-update ~/.config/opencode/skills/
 tmp_dir="$(mktemp -d)"
 git clone --depth 1 https://github.com/tealiving/UpdateOnlineTool.git "$tmp_dir/UpdateOnlineTool"
 mkdir -p ~/.codex/skills ~/.config/opencode/skills
-rm -rf ~/.codex/skills/pyqt-nas-online-update ~/.config/opencode/skills/pyqt-nas-online-update
-cp -R "$tmp_dir/UpdateOnlineTool/skills/pyqt-nas-online-update" ~/.codex/skills/
-cp -R "$tmp_dir/UpdateOnlineTool/skills/pyqt-nas-online-update" ~/.config/opencode/skills/
+rm -rf ~/.codex/skills/uot-nas-online-update ~/.codex/skills/pyqt-nas-online-update ~/.config/opencode/skills/uot-nas-online-update ~/.config/opencode/skills/pyqt-nas-online-update
+cp -R "$tmp_dir/UpdateOnlineTool/skills/uot-nas-online-update" ~/.codex/skills/
+cp -R "$tmp_dir/UpdateOnlineTool/skills/uot-nas-online-update" ~/.config/opencode/skills/
 rm -rf "$tmp_dir"
 ```
 
 如果本机习惯使用 `npx`，可以通过 `degit` 拉取子目录；这不是官方 npm 包，只是 GitHub 子目录安装方式：
 
 ```bash
-npx degit tealiving/UpdateOnlineTool/skills/pyqt-nas-online-update ~/.codex/skills/pyqt-nas-online-update --force
-npx degit tealiving/UpdateOnlineTool/skills/pyqt-nas-online-update ~/.config/opencode/skills/pyqt-nas-online-update --force
+npx degit tealiving/UpdateOnlineTool/skills/uot-nas-online-update ~/.codex/skills/uot-nas-online-update --force
+npx degit tealiving/UpdateOnlineTool/skills/uot-nas-online-update ~/.config/opencode/skills/uot-nas-online-update --force
 ```
 
-当前项目没有发布 npm/npx 安装器；CLI/SDK 的正式安装方式仍是 Python 包，例如 `pip install -e .` 或从 Git URL 安装。
+当前项目没有发布 npm/npx 安装器；CLI/SDK 的正式安装方式仍是 Python 包，例如 `python -m pip install -e .` 或从 Git URL 安装。
 
-## 发布
+## 快速命令速查
+
+以下命令适合日常发布和联调；完整参数与生产发布流程见上文。
+
+### 发布
 
 ```bash
 uot publish --settings config/settings.json --app my-tool --version 1.0.6 --package dist/app.zip
 ```
 
-## 校验
+### 校验
 
 ```bash
 uot verify --settings config/settings.json --app my-tool
 ```
 
-## 检查更新
+### 检查更新
 
 ```bash
 uot check --settings config/settings.json --app my-tool --current-version 1.0.5

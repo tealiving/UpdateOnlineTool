@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 
@@ -85,7 +87,7 @@ def copy_package_with_verification(
         )
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = target_path.with_suffix(target_path.suffix + ".tmp")
+    temp_path = target_path.parent / f".{target_path.name}.{os.getpid()}.{uuid4().hex}.tmp"
     digest = hashlib.sha256()
     copied_bytes = 0
     try:

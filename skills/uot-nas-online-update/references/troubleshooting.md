@@ -1,4 +1,19 @@
-# PyQt + NAS + UOT 常见问题排查
+# UOT NAS 桌面应用常见问题排查
+
+> 新的 Bootstrap/Agent 模式优先检查 `operations/<operation-id>.status.json`、
+> `update-status.json`、`update-result.json` 和 stable Bootstrap 日志。本文的
+> `uot-updater`、launcher 与 PyInstaller 条目仅适用于 legacy 兼容路径。
+
+## 目录
+
+- [NAS 无法访问](#nas-无法访问)
+- [`uot init` 没有生成项目配置](#uot-init-没有生成项目配置)
+- [GUI 检查不到新版本](#gui-检查不到新版本)
+- [升级包校验失败](#升级包校验失败)
+- [启动安装根没有 GUI](#启动安装根没有-gui)
+- [升级后没有切换版本](#升级后没有切换版本)
+- [用户要修改 NAS 路径](#用户要修改-nas-路径)
+- [不应放回 PyQt 项目的通用代码](#不应放回-pyqt-项目的通用代码)
 
 ## NAS 无法访问
 

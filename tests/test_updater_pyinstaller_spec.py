@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
-from update_online_tool.pyinstaller_assembly import write_updater_pyinstaller_spec
+from update_online_tool.pyinstaller_assembly import (
+    write_agent_pyinstaller_spec,
+    write_bootstrap_pyinstaller_spec,
+    write_bridge_pyinstaller_spec,
+    write_updater_pyinstaller_spec,
+)
 
 
 def test_write_updater_pyinstaller_spec_generates_onedir_files(tmp_path: Path) -> None:
@@ -47,3 +52,23 @@ def test_write_updater_pyinstaller_spec_refuses_overwrite_without_force(tmp_path
         write_updater_pyinstaller_spec(output_dir=tmp_path / "updater", name="MyToolUpdater")
 
     assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
+
+
+def test_write_agent_and_bootstrap_pyinstaller_specs_use_stable_runtime_clis(tmp_path: Path) -> None:
+    """参考运行时可独立生成 Agent 与 Bootstrap 的可打包入口。"""
+    agent = write_agent_pyinstaller_spec(output_dir=tmp_path / "agent", name="MyToolAgent")
+    bootstrap = write_bootstrap_pyinstaller_spec(output_dir=tmp_path / "bootstrap", name="MyToolBootstrap")
+
+    assert "update_online_tool.agent_cli" in agent.entry_script.read_text(encoding="utf-8")
+    assert "name='MyToolAgent'" in agent.spec_path.read_text(encoding="utf-8")
+    assert "update_online_tool.bootstrap_cli" in bootstrap.entry_script.read_text(encoding="utf-8")
+    assert "name='MyToolBootstrap'" in bootstrap.spec_path.read_text(encoding="utf-8")
+
+
+def test_write_bridge_pyinstaller_spec_uses_json_bridge_cli(tmp_path: Path) -> None:
+    """Tauri/Electron 可将独立 bridge 作为 release 内资源打包。"""
+    bridge = write_bridge_pyinstaller_spec(output_dir=tmp_path / "bridge", name="MyToolBridge", onefile=True)
+
+    assert "update_online_tool.bridge_cli" in bridge.entry_script.read_text(encoding="utf-8")
+    assert "name='MyToolBridge'" in bridge.spec_path.read_text(encoding="utf-8")
+    assert "COLLECT(" not in bridge.spec_path.read_text(encoding="utf-8")

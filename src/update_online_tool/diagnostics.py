@@ -33,6 +33,7 @@ def collect_diagnostics(*, install_root: Path, entry_name: str = "") -> dict[str
         "update_status": _read_json_file(root / "update-status.json"),
         "pending_update": _pending_update_summary(root / "pending-update.json"),
         "update_lock": _read_text_file(root / "update.lock"),
+        "agent_operations": _agent_operations_summary(root),
         "installed_versions": _installed_versions_summary(root, entry_name),
         "logs": _log_summaries(root),
         "problems": [],
@@ -54,7 +55,7 @@ def write_diagnostic_archive(*, report: dict[str, Any], install_root: Path, arch
             try:
                 if path.stat().st_size > MAX_LOG_BYTES:
                     continue
-                archive.write(path, arcname=str(path.relative_to(root)))
+                _write_diagnostic_file(archive, root, path)
             except OSError:
                 continue
     return target
@@ -87,6 +88,7 @@ def _file_status(root: Path) -> dict[str, bool]:
         "update_status_json": (root / "update-status.json").is_file(),
         "pending_update_json": (root / "pending-update.json").is_file(),
         "update_lock": (root / "update.lock").is_file(),
+        "operations_dir": (root / "operations").is_dir(),
         "releases_dir": (root / "releases").is_dir(),
         "logs_dir": (root / "logs").is_dir(),
     }
@@ -184,6 +186,145 @@ def _pending_update_summary(path: Path) -> dict[str, Any]:
     return summary
 
 
+def _agent_operations_summary(root: Path) -> dict[str, Any]:
+    """汇总独立 Agent 的 request、handoff 和 status，不暴露启动命令参数。"""
+    operations = [_agent_operation_summary(root, path) for path in _agent_request_files(root)]
+    latest = max(operations, key=_agent_operation_sort_key) if operations else None
+    return {
+        "directory_exists": (root / "operations").is_dir(),
+        "count": len(operations),
+        "operations": operations,
+        "latest": _latest_agent_operation_summary(latest),
+    }
+
+
+def _agent_operation_summary(root: Path, request_path: Path) -> dict[str, Any]:
+    """生成一条 operation 的可展示摘要。"""
+    status_path = _agent_operation_related_path(request_path, ".status.json")
+    handoff_path = _agent_operation_related_path(request_path, ".handoff.json")
+    request = _agent_request_summary(_read_json_file(request_path))
+    status = _agent_status_summary(_read_json_file(status_path))
+    handoff = _agent_handoff_summary(_read_json_file(handoff_path))
+    operation_id = request.get("operation_id") or status.get("operation_id") or handoff.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id:
+        operation_id = request_path.name.removesuffix(".request.json")
+    return {
+        "operation_id": operation_id,
+        "request_path": str(request_path.relative_to(root)),
+        "status_path": str(status_path.relative_to(root)),
+        "handoff_path": str(handoff_path.relative_to(root)),
+        "request": request,
+        "status": status,
+        "handoff": handoff,
+    }
+
+
+def _agent_operation_related_path(request_path: Path, suffix: str) -> Path:
+    """由 request 文件生成同一 operation 的关联文件路径。"""
+    return request_path.with_name(f"{request_path.name.removesuffix('.request.json')}{suffix}")
+
+
+def _agent_request_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """提取不含 Bootstrap 完整参数的 request 摘要。"""
+    summary = _json_file_summary(data)
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return summary
+    for field in (
+        "schema_version",
+        "operation_id",
+        "action",
+        "install_root",
+        "pending_path",
+        "target_version",
+        "old_pid",
+        "wait_timeout",
+        "handoff_timeout",
+    ):
+        if field in payload:
+            summary[field] = payload[field]
+    command = payload.get("bootstrap_command")
+    if isinstance(command, list):
+        summary["bootstrap_command_arg_count"] = len(command)
+    return summary
+
+
+def _write_diagnostic_file(archive: zipfile.ZipFile, root: Path, path: Path) -> None:
+    """归档单个证据文件，脱敏 Agent request 的 Bootstrap 参数。"""
+    archive_name = str(path.relative_to(root))
+    if path in _agent_request_files(root):
+        summary = _agent_request_summary(_read_json_file(path))
+        archive.writestr(archive_name, json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+        return
+    archive.write(path, arcname=archive_name)
+
+
+def _agent_status_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """提取 Agent status 的状态、错误和 PID 摘要。"""
+    summary = _json_file_summary(data)
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return summary
+    for field in (
+        "schema_version",
+        "operation_id",
+        "phase",
+        "message",
+        "error",
+        "agent_pid",
+        "bootstrap_pid",
+        "updated_at",
+    ):
+        if field in payload:
+            summary[field] = payload[field]
+    return summary
+
+
+def _agent_handoff_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """提取宿主交接确认摘要。"""
+    summary = _json_file_summary(data)
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return summary
+    for field in ("schema_version", "operation_id", "confirmed_at"):
+        if field in payload:
+            summary[field] = payload[field]
+    return summary
+
+
+def _json_file_summary(data: dict[str, Any]) -> dict[str, Any]:
+    """保留 JSON 文件存在性和读取错误。"""
+    summary = {"exists": bool(data.get("exists"))}
+    if "error" in data:
+        summary["error"] = data["error"]
+    return summary
+
+
+def _agent_operation_sort_key(operation: dict[str, Any]) -> tuple[str, str, str, str]:
+    """使用 status、handoff 时间和 operation ID 稳定地选择最新事务。"""
+    status = operation.get("status")
+    handoff = operation.get("handoff")
+    status_at = status.get("updated_at", "") if isinstance(status, dict) else ""
+    handoff_at = handoff.get("confirmed_at", "") if isinstance(handoff, dict) else ""
+    return (str(status_at), str(handoff_at), str(operation.get("operation_id", "")), str(operation.get("request_path", "")))
+
+
+def _latest_agent_operation_summary(operation: dict[str, Any] | None) -> dict[str, Any] | None:
+    """扁平化最新 operation，便于 CLI 和支持人员快速判断阶段。"""
+    if operation is None:
+        return None
+    status = operation.get("status")
+    if not isinstance(status, dict):
+        status = {}
+    return {
+        "operation_id": operation.get("operation_id", ""),
+        "phase": status.get("phase", ""),
+        "message": status.get("message", ""),
+        "error": status.get("error", ""),
+        "updated_at": status.get("updated_at", ""),
+    }
+
+
 def _installed_versions_summary(root: Path, entry_name: str) -> dict[str, Any]:
     """列出已安装版本摘要。"""
     try:
@@ -274,6 +415,12 @@ def _detect_problems(report: dict[str, Any]) -> list[str]:
     pending = report.get("pending_update")
     if isinstance(pending, dict) and pending.get("exists") and not pending.get("package_exists", True):
         problems.append(f"pending package is missing: {pending.get('package_path', '')}")
+    agent_operations = report.get("agent_operations")
+    if isinstance(agent_operations, dict):
+        latest = agent_operations.get("latest")
+        if isinstance(latest, dict) and latest.get("phase") == "failed":
+            error = latest.get("error") or latest.get("message") or "unknown agent failure"
+            problems.append(f"last agent operation failed: {error}")
     return problems
 
 
@@ -286,7 +433,31 @@ def _diagnostic_files(root: Path) -> list[Path]:
         root / "pending-update.json",
         root / "update.lock",
     ]
+    files.extend(_agent_operation_files(root))
     files.extend(_log_files(root))
+    return sorted(set(files), key=lambda item: str(item))
+
+
+def _agent_request_files(root: Path) -> list[Path]:
+    """列出可关联 request/status/handoff 的 Agent 请求文件。"""
+    operations_dir = root / "operations"
+    if not operations_dir.is_dir():
+        return []
+    return sorted(
+        (path for path in operations_dir.glob("*.request.json") if path.is_file()),
+        key=lambda item: str(item),
+    )
+
+
+def _agent_operation_files(root: Path) -> list[Path]:
+    """列出可安全归档的 Agent operation 证据文件。"""
+    files: list[Path] = []
+    for request_path in _agent_request_files(root):
+        files.append(request_path)
+        for suffix in (".status.json", ".handoff.json"):
+            related_path = _agent_operation_related_path(request_path, suffix)
+            if related_path.is_file():
+                files.append(related_path)
     return files
 
 

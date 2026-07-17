@@ -77,6 +77,176 @@ def test_cli_publish_writes_package_and_latest_json(tmp_path: Path) -> None:
     assert not (nas_root / "automation-manual-studio" / "stable" / "publish.lock").exists()
 
 
+def test_cli_publish_rejects_release_contract_with_different_version(tmp_path: Path) -> None:
+    """验证 NAS manifest 版本不能与已验证构建产物的契约分裂。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    contract = tmp_path / "uot-release.json"
+    package.write_bytes(b"release")
+    contract.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "version": "1.0.5",
+                "platform": "windows",
+                "entry_path": "AutomationManualStudio.exe",
+                "required_paths": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+            "--version",
+            "1.0.6",
+            "--platform",
+            "windows",
+            "--package",
+            str(package),
+            "--release-contract",
+            str(contract),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (nas_root / "automation-manual-studio").exists()
+
+
+def test_cli_publish_requires_contract_to_be_inside_release_package(tmp_path: Path) -> None:
+    """验证带契约发布时，契约必须属于实际上传的 zip。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    contract = tmp_path / "uot-release.json"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Demo.app/Contents/MacOS/Demo", "app")
+    contract.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "app_id": "automation-manual-studio",
+                "version": "1.0.6",
+                "platform": "windows",
+                "entry_path": "Demo.exe",
+                "required_paths": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+            "--version",
+            "1.0.6",
+            "--platform",
+            "windows",
+            "--package",
+            str(package),
+            "--release-contract",
+            str(contract),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (nas_root / "automation-manual-studio").exists()
+
+
+def test_cli_publish_accepts_matching_contract_from_release_package(tmp_path: Path) -> None:
+    """验证带契约的 release 包可作为 NAS 发布的版本身份来源。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    contract = tmp_path / "uot-release.json"
+    payload = {
+        "schema_version": 1,
+        "app_id": "automation-manual-studio",
+        "version": "1.0.6",
+        "platform": "windows",
+        "entry_path": "Demo.exe",
+        "required_paths": [],
+    }
+    contract.write_text(json.dumps(payload), encoding="utf-8")
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Demo.exe", "app")
+        archive.writestr("uot-release.json", json.dumps(payload))
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+            "--version",
+            "1.0.6",
+            "--platform",
+            "windows",
+            "--package",
+            str(package),
+            "--release-contract",
+            str(contract),
+        ]
+    )
+
+    assert exit_code == 0
+    assert (nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "windows" / "package.zip").is_file()
+
+
+def test_cli_writes_and_validates_framework_release_contract(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """验证框架构建产物可在发布前写入并校验 UOT 契约。"""
+    release_dir = tmp_path / "release"
+    executable = release_dir / "Demo.app/Contents/MacOS/Demo"
+    settings = release_dir / "Demo.app/Contents/Resources/uot/settings.json"
+    bridge = release_dir / "Demo.app/Contents/Resources/uot/uot-bridge/uot-bridge"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("app", encoding="utf-8")
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{}", encoding="utf-8")
+    bridge.parent.mkdir(parents=True)
+    bridge.write_text("bridge", encoding="utf-8")
+    command = [
+        "--release-dir",
+        str(release_dir),
+        "--app",
+        "demo",
+        "--version",
+        "1.2.3",
+        "--platform",
+        "macos",
+        "--entry-path",
+        "Demo.app",
+        "--required-path",
+        "Demo.app/Contents/Resources/uot/settings.json",
+        "--required-path",
+        "Demo.app/Contents/Resources/uot/uot-bridge/uot-bridge",
+    ]
+
+    assert main(["write-release-contract", *command]) == 0
+    capsys.readouterr()
+    exit_code = main(["validate-release", *command])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["contract"]["version"] == "1.2.3"
+
+
 def test_cli_publish_rejects_existing_publish_lock(tmp_path: Path) -> None:
     """验证 publish.lock 存在时拒绝并发发布且不复制包。"""
     settings_path = tmp_path / "settings.json"
@@ -1435,6 +1605,64 @@ def test_cli_assemble_pyinstaller_copies_updater_bundle(tmp_path: Path) -> None:
     assert (update_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
 
 
+def test_cli_assemble_pyinstaller_supports_stable_bootstrap_agent_mode(tmp_path: Path) -> None:
+    """新模式将 Agent 固定在安装根，升级包不再携带 launcher/updater sidecar。"""
+    dist = tmp_path / "dist"
+    release_dir = dist / "MyTool_release_v1.0.5"
+    launcher_dir = dist / "MyTool_launcher"
+    agent_bundle = dist / "MyToolAgent"
+    (release_dir / "_internal").mkdir(parents=True)
+    (launcher_dir / "_internal").mkdir(parents=True)
+    agent_bundle.mkdir(parents=True)
+    (release_dir / "MyTool.exe").write_text("gui", encoding="utf-8")
+    (launcher_dir / "MyToolBootstrap.exe").write_text("bootstrap", encoding="utf-8")
+    (release_dir / "_internal" / "python311.dll").write_text("runtime", encoding="utf-8")
+    (launcher_dir / "_internal" / "python311.dll").write_text("runtime", encoding="utf-8")
+    (agent_bundle / "uot-agent.exe").write_text("agent", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "assemble-pyinstaller",
+            "--version",
+            "1.0.5",
+            "--dist-dir",
+            str(dist),
+            "--product-name",
+            "MyTool",
+            "--launcher-entry-name",
+            "MyToolBootstrap.exe",
+            "--bootstrap-agent-mode",
+            "--agent-bundle",
+            str(agent_bundle),
+        ]
+    )
+
+    install_root = dist / "MyTool_install_v1.0.5"
+    update_root = dist / "MyTool_update_v1.0.5"
+    assert exit_code == 0
+    assert (install_root / "MyToolBootstrap.exe").read_text(encoding="utf-8") == "bootstrap"
+    assert (install_root / "agent" / "MyToolAgent" / "uot-agent.exe").read_text(encoding="utf-8") == "agent"
+    assert (update_root / "MyTool.exe").read_text(encoding="utf-8") == "gui"
+    assert not (update_root / "_launcher").exists()
+    assert not (update_root / "updater").exists()
+
+
+def test_cli_writes_agent_and_bootstrap_specs(tmp_path: Path) -> None:
+    """CLI 可生成稳定运行时两个独立可执行文件的 PyInstaller spec。"""
+    agent_output = tmp_path / "agent"
+    bootstrap_output = tmp_path / "bootstrap"
+
+    agent_exit = main(["write-agent-spec", "--output-dir", str(agent_output), "--name", "MyToolAgent"])
+    bootstrap_exit = main(
+        ["write-bootstrap-spec", "--output-dir", str(bootstrap_output), "--name", "MyToolBootstrap"]
+    )
+
+    assert agent_exit == 0
+    assert bootstrap_exit == 0
+    assert "update_online_tool.agent_cli" in (agent_output / "uot_agent_entry.py").read_text(encoding="utf-8")
+    assert "update_online_tool.bootstrap_cli" in (bootstrap_output / "uot_bootstrap_entry.py").read_text(encoding="utf-8")
+
+
 def test_cli_assemble_pyinstaller_supports_macos_onedir(tmp_path: Path) -> None:
     """验证 macOS PyInstaller onedir 可使用无 .exe 入口装配。
 
@@ -1660,3 +1888,51 @@ def _write_runtime_manifest(path: Path, package: Path, *, version: str) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def test_cli_assemble_release_supports_tauri_app_with_stable_runtime(tmp_path: Path) -> None:
+    """通用 CLI 可装配 Tauri `.app`、Agent 与原生 Bootstrap。"""
+    release_dir = tmp_path / "release"
+    bootstrap_dir = tmp_path / "bootstrap"
+    agent_bundle = tmp_path / "uot-agent"
+    app_bundle = release_dir / "Timer.app"
+    (app_bundle / "Contents" / "MacOS").mkdir(parents=True)
+    bootstrap_dir.mkdir()
+    agent_bundle.mkdir()
+    (app_bundle / "Contents" / "MacOS" / "Timer").write_text("tauri", encoding="utf-8")
+    (bootstrap_dir / "uot-bootstrap").write_text("bootstrap", encoding="utf-8")
+    (agent_bundle / "uot-agent").write_text("agent", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "assemble-release",
+            "--version",
+            "1.0.0",
+            "--app",
+            "desktop-floating-timer",
+            "--release-dir",
+            str(release_dir),
+            "--release-entry",
+            "Timer.app",
+            "--bootstrap-dir",
+            str(bootstrap_dir),
+            "--bootstrap-entry",
+            "uot-bootstrap",
+            "--agent-bundle",
+            str(agent_bundle),
+            "--install-output",
+            str(tmp_path / "install"),
+            "--update-output",
+            str(tmp_path / "update"),
+            "--platform",
+            "macos",
+            "--entry-path",
+            "Timer.app",
+        ]
+    )
+
+    assert exit_code == 0
+    assert (tmp_path / "install" / "uot-bootstrap").read_text(encoding="utf-8") == "bootstrap"
+    assert (tmp_path / "install" / "agent" / "uot-agent" / "uot-agent").read_text(encoding="utf-8") == "agent"
+    assert (tmp_path / "install" / "releases" / "1.0.0" / "Timer.app" / "Contents" / "MacOS" / "Timer").is_file()
+    assert not (tmp_path / "update" / "agent").exists()

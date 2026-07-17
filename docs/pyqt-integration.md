@@ -16,7 +16,7 @@ GUI 项目只负责界面：
 - 复制升级包。
 - 校验包体大小和 SHA-256。
 - 写入 pending manifest。
-- 启动独立 updater。
+- 由稳定 Bootstrap 与 Update Agent 完成进程交接；旧独立 updater 仅保留兼容路径。
 - 装配 PyInstaller GUI release 与稳定 launcher。
 
 GUI 项目应在线程中调用 SDK 方法。SDK 本身不导入 PyQt。
@@ -75,7 +75,13 @@ class PrepareUpdateWorker:
 - `prepare()` 完成后，GUI 调用启动 updater 的 SDK/API，然后退出应用。
 - GUI 展示 `UpdateError.code.value` 和 `UpdateError.message`，不要解析异常文本。
 
-## 已有 PyQt updater 的接入方式
+## 新项目：Agent + Bootstrap 接入
+
+新 PyQt 项目应使用 [Agent + Bootstrap 迁移指南](pyqt-agent-migration.md)。该流程在
+Agent ready 后保存业务状态、确认 handoff 并退出；新版本只能由稳定 Bootstrap 启动。
+它不要求 GUI 自行修改 `current.json`、等待 PID 或启动版本化 exe。
+
+## 已有 PyQt updater 的 legacy 接入方式
 
 如果 PyQt 工具已经拥有独立 updater 可执行文件，updater 仍保留在工具项目中；`update_online_tool.pyqt_runtime` 只负责写交接文件和启动进程。
 

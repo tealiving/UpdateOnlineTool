@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "update-online-tool"
-version = "0.2.3"
-description = "NAS-based online update SDK and CLI for PyQt tools"
+version = "0.2.4"
+description = "NAS-based online update SDK and CLI for desktop applications"
 requires-python = ">=3.11"
 readme = "README.md"
 dependencies = ["cryptography>=42"]
@@ -13,6 +13,9 @@ dependencies = ["cryptography>=42"]
 [project.scripts]
 uot = "update_online_tool.cli:main"
 uot-updater = "update_online_tool.updater_cli:main"
+uot-bridge = "update_online_tool.bridge_cli:main"
+uot-agent = "update_online_tool.agent_cli:main"
+uot-bootstrap = "update_online_tool.bootstrap_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

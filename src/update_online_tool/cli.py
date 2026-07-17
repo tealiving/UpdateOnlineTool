@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sys
+import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -24,7 +25,17 @@ from update_online_tool.nas import NasReleaseSource
 from update_online_tool.pyinstaller_assembly import (
     assemble_pyinstaller_release,
     default_pyinstaller_assembly_config,
+    write_agent_pyinstaller_spec,
+    write_bootstrap_pyinstaller_spec,
+    write_bridge_pyinstaller_spec,
     write_updater_pyinstaller_spec,
+)
+from update_online_tool.release_assembly import ReleaseAssemblyConfig, assemble_release_layout, create_release_package
+from update_online_tool.release_contract import (
+    RELEASE_CONTRACT_FILENAME,
+    ReleaseArtifactContract,
+    validate_release_artifact,
+    write_release_contract,
 )
 from update_online_tool.runtime import (
     apply_pending_update,
@@ -92,8 +103,22 @@ def main(argv: list[str] | None = None) -> int:
             return _doctor(args)
         if args.command == "write-updater-spec":
             return _write_updater_spec(args)
+        if args.command == "write-agent-spec":
+            return _write_agent_spec(args)
+        if args.command == "write-bootstrap-spec":
+            return _write_bootstrap_spec(args)
+        if args.command == "write-bridge-spec":
+            return _write_bridge_spec(args)
         if args.command == "assemble-pyinstaller":
             return _assemble_pyinstaller(args)
+        if args.command == "assemble-release":
+            return _assemble_release(args)
+        if args.command == "package-release":
+            return _package_release(args)
+        if args.command == "write-release-contract":
+            return _write_release_contract(args)
+        if args.command == "validate-release":
+            return _validate_release(args)
     except UpdateError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -141,6 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--app", required=True, help="Application id.")
     publish.add_argument("--version", required=True, help="Release version.")
     publish.add_argument("--package", required=True, type=Path, help="Release zip path.")
+    publish.add_argument("--release-contract", default=None, type=Path, help="Optional validated uot-release.json path.")
     publish.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
     publish.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
     publish.add_argument("--notes", default="", help="Release notes.")
@@ -283,6 +309,27 @@ def _build_parser() -> argparse.ArgumentParser:
     updater_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
     updater_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
 
+    agent_spec = subparsers.add_parser("write-agent-spec", help="Write a PyInstaller spec for uot-agent.")
+    agent_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
+    agent_spec.add_argument("--name", default="uot-agent", help="PyInstaller executable name.")
+    agent_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
+    agent_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
+    agent_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
+
+    bootstrap_spec = subparsers.add_parser("write-bootstrap-spec", help="Write a PyInstaller spec for uot-bootstrap.")
+    bootstrap_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
+    bootstrap_spec.add_argument("--name", default="uot-bootstrap", help="PyInstaller executable name.")
+    bootstrap_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
+    bootstrap_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
+    bootstrap_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
+
+    bridge_spec = subparsers.add_parser("write-bridge-spec", help="Write a PyInstaller spec for uot-bridge.")
+    bridge_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
+    bridge_spec.add_argument("--name", default="uot-bridge", help="PyInstaller executable name.")
+    bridge_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
+    bridge_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
+    bridge_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
+
     assemble = subparsers.add_parser("assemble-pyinstaller", help="Assemble PyInstaller GUI and launcher bundles.")
     assemble.add_argument("--version", required=True, help="Release version.")
     assemble.add_argument("--dist-dir", default="dist", type=Path, help="PyInstaller dist directory.")
@@ -295,7 +342,49 @@ def _build_parser() -> argparse.ArgumentParser:
     assemble.add_argument("--settings", default=None, type=Path, help="Project settings.json to bundle.")
     assemble.add_argument("--updater-bundle", default=None, type=Path, help="Built uot-updater onefile or onedir artifact.")
     assemble.add_argument("--updater-name", default="", help="Target name under install_root/updater/. Defaults to source name.")
+    assemble.add_argument("--bootstrap-agent-mode", action="store_true", help="Keep stable Bootstrap/Agent outside release update packages.")
+    assemble.add_argument("--agent-bundle", default=None, type=Path, help="Built uot-agent artifact required by --bootstrap-agent-mode.")
+    assemble.add_argument("--agent-name", default="", help="Target name under install_root/agent/. Defaults to source name.")
     assemble.add_argument("--force", action="store_true", help="Overwrite existing output directories.")
+
+    assemble_release = subparsers.add_parser(
+        "assemble-release",
+        help="Assemble a framework-agnostic release with stable Bootstrap and Agent.",
+    )
+    assemble_release.add_argument("--version", required=True, help="Release version.")
+    assemble_release.add_argument("--app", required=True, help="Application id.")
+    assemble_release.add_argument("--release-dir", required=True, type=Path, help="Built Electron/Tauri/PyQt release directory.")
+    assemble_release.add_argument("--release-entry", required=True, help="Entry path inside --release-dir.")
+    assemble_release.add_argument("--bootstrap-dir", required=True, type=Path, help="Stable Bootstrap directory.")
+    assemble_release.add_argument("--bootstrap-entry", required=True, help="Entry path inside --bootstrap-dir.")
+    assemble_release.add_argument("--agent-bundle", required=True, type=Path, help="Stable uot-agent bundle.")
+    assemble_release.add_argument("--install-output", required=True, type=Path, help="Target UOT install root.")
+    assemble_release.add_argument("--update-output", required=True, type=Path, help="Target release-only update directory.")
+    assemble_release.add_argument("--platform", required=True, choices=["windows", "macos", "linux"], help="Target OS platform.")
+    assemble_release.add_argument("--entry-path", required=True, help="Normalized entry path written to current.json.")
+    assemble_release.add_argument("--agent-name", default="", help="Stable Agent target name. Defaults to source name.")
+    assemble_release.add_argument("--force", action="store_true", help="Overwrite existing output directories.")
+
+    package_release = subparsers.add_parser(
+        "package-release",
+        help="Create a Unicode-safe release zip and exclude macOS metadata.",
+    )
+    package_release.add_argument("--source-dir", required=True, type=Path, help="Release-only directory to archive.")
+    package_release.add_argument("--output", required=True, type=Path, help="Output package.zip path.")
+    package_release.add_argument("--force", action="store_true", help="Overwrite an existing package.")
+
+    write_contract = subparsers.add_parser(
+        "write-release-contract",
+        help="Write a UOT release artifact contract after framework packaging.",
+    )
+    _add_release_contract_args(write_contract)
+    write_contract.add_argument("--force", action="store_true", help="Overwrite an existing uot-release.json.")
+
+    validate_release = subparsers.add_parser(
+        "validate-release",
+        help="Validate an entry, runtime resources, and optional UOT release contract.",
+    )
+    _add_release_contract_args(validate_release)
     return parser
 
 
@@ -493,6 +582,14 @@ def _publish(args: argparse.Namespace) -> int:
     source_package_path = Path(args.package)
     if not source_package_path.is_file():
         raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {source_package_path}")
+    if args.release_contract is not None:
+        _validate_publish_release_contract(
+            Path(args.release_contract),
+            app_id=str(args.app),
+            version=str(args.version),
+            platform=platform,
+            package_path=source_package_path,
+        )
     notes = _resolve_publish_notes(args)
     target_package_path = source.package_path(args.app, args.version, settings.package_filename, platform, channel)
     with _publish_lock(source=source, app_id=args.app, channel=channel, platform=platform):
@@ -892,6 +989,45 @@ def _write_updater_spec(args: argparse.Namespace) -> int:
     return 0
 
 
+def _write_agent_spec(args: argparse.Namespace) -> int:
+    """生成 uot-agent PyInstaller spec。"""
+    result = write_agent_pyinstaller_spec(
+        output_dir=Path(args.output_dir),
+        name=args.name,
+        onefile=bool(args.onefile),
+        console=not bool(args.windowed),
+        force=bool(args.force),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _write_bootstrap_spec(args: argparse.Namespace) -> int:
+    """生成 uot-bootstrap PyInstaller spec。"""
+    result = write_bootstrap_pyinstaller_spec(
+        output_dir=Path(args.output_dir),
+        name=args.name,
+        onefile=bool(args.onefile),
+        console=not bool(args.windowed),
+        force=bool(args.force),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _write_bridge_spec(args: argparse.Namespace) -> int:
+    """生成 uot-bridge PyInstaller spec。"""
+    result = write_bridge_pyinstaller_spec(
+        output_dir=Path(args.output_dir),
+        name=args.name,
+        onefile=bool(args.onefile),
+        console=not bool(args.windowed),
+        force=bool(args.force),
+    )
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2))
+    return 0
+
+
 def _assemble_pyinstaller(args: argparse.Namespace) -> int:
     """装配 PyInstaller 发布目录。
 
@@ -910,6 +1046,9 @@ def _assemble_pyinstaller(args: argparse.Namespace) -> int:
         settings_path=args.settings,
         updater_bundle=args.updater_bundle,
         updater_name=args.updater_name,
+        bootstrap_agent_mode=bool(args.bootstrap_agent_mode),
+        agent_bundle=args.agent_bundle,
+        agent_name=args.agent_name,
         force=bool(args.force),
     )
     result = assemble_pyinstaller_release(config)
@@ -919,7 +1058,139 @@ def _assemble_pyinstaller(args: argparse.Namespace) -> int:
     print(f"Release executable: {result.release_executable}")
     if result.updater_path is not None:
         print(f"Updater bundle: {result.updater_path}")
+    if result.agent_path is not None:
+        print(f"Agent bundle: {result.agent_path}")
     return 0
+
+
+def _assemble_release(args: argparse.Namespace) -> int:
+    """装配 Tauri、Electron 等框架无关的稳定 UOT release。"""
+    result = assemble_release_layout(
+        ReleaseAssemblyConfig(
+            version=args.version,
+            app_id=args.app,
+            release_dir=Path(args.release_dir),
+            launcher_dir=Path(args.bootstrap_dir),
+            install_output=Path(args.install_output),
+            update_output=Path(args.update_output),
+            platform=args.platform,
+            entry_path=args.entry_path,
+            release_entry_path=args.release_entry,
+            launcher_entry_path=args.bootstrap_entry,
+            bootstrap_agent_mode=True,
+            agent_bundle=Path(args.agent_bundle),
+            agent_name=args.agent_name,
+            force=bool(args.force),
+        )
+    )
+    print(f"Assembled install root: {result.install_root}")
+    print(f"Assembled update root: {result.update_root}")
+    print(f"Bootstrap executable: {result.launcher_entry}")
+    print(f"Release executable: {result.release_entry}")
+    print(f"Agent bundle: {result.agent_path}")
+    return 0
+
+
+def _package_release(args: argparse.Namespace) -> int:
+    """创建 Unicode 安全的 release 包。"""
+    package = create_release_package(
+        Path(args.source_dir),
+        Path(args.output),
+        force=bool(args.force),
+    )
+    print(f"Created release package: {package}")
+    return 0
+
+
+def _add_release_contract_args(parser: argparse.ArgumentParser) -> None:
+    """添加 release 完整性契约的公共参数。"""
+    parser.add_argument("--release-dir", required=True, type=Path, help="Release root directory.")
+    parser.add_argument("--app", required=True, help="Application id.")
+    parser.add_argument("--version", required=True, help="Release version.")
+    parser.add_argument("--platform", required=True, choices=["windows", "macos", "linux"], help="Target platform.")
+    parser.add_argument("--entry-path", required=True, help="Entry path relative to release root.")
+    parser.add_argument(
+        "--required-path",
+        dest="required_paths",
+        action="append",
+        default=[],
+        help="Required file path relative to release root; repeat for multiple files.",
+    )
+
+
+def _write_release_contract(args: argparse.Namespace) -> int:
+    """写入框架产物的 UOT release 契约。"""
+    target = Path(args.release_dir) / "uot-release.json"
+    if target.exists() and not bool(args.force):
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release contract already exists: {target}")
+    contract = ReleaseArtifactContract(
+        app_id=str(args.app).strip(),
+        version=str(args.version).strip().removeprefix("v").removeprefix("V"),
+        platform=str(args.platform).strip(),
+        entry_path=str(args.entry_path).strip(),
+        required_paths=tuple(str(item) for item in args.required_paths),
+    )
+    path = write_release_contract(Path(args.release_dir), contract)
+    print(f"Wrote release contract: {path}")
+    return 0
+
+
+def _validate_release(args: argparse.Namespace) -> int:
+    """执行发布前或运行时 release 完整性校验。"""
+    contract = validate_release_artifact(
+        release_dir=Path(args.release_dir),
+        version=str(args.version),
+        entry_path=str(args.entry_path),
+        app_id=str(args.app),
+        platform=str(args.platform),
+        required_paths=tuple(str(item) for item in args.required_paths),
+    )
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "release_dir": str(Path(args.release_dir)),
+                "contract": contract.to_payload() if contract is not None else None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _validate_publish_release_contract(
+    path: Path,
+    *,
+    app_id: str,
+    version: str,
+    platform: str,
+    package_path: Path,
+) -> None:
+    """确认 NAS manifest 身份与已验证 release 契约一致。"""
+    payload = _load_manifest_payload(Path(path))
+    try:
+        contract = ReleaseArtifactContract.from_payload(payload)
+    except UpdateError as exc:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"invalid release contract: {path}: {exc.message}") from exc
+    normalized_version = str(version).strip().removeprefix("v").removeprefix("V")
+    if contract.app_id != str(app_id).strip():
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "release contract app_id does not match publish --app")
+    if contract.version != normalized_version:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "release contract version does not match publish --version")
+    if platform and contract.platform != platform:
+        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "release contract platform does not match publish --platform")
+    try:
+        with zipfile.ZipFile(package_path) as archive:
+            packaged_payload = json.loads(archive.read(RELEASE_CONTRACT_FILENAME).decode("utf-8"))
+    except KeyError as exc:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "release package does not contain uot-release.json") from exc
+    except (OSError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"cannot read release contract from package: {package_path}") from exc
+    if not isinstance(packaged_payload, dict):
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "release package contract must be a JSON object")
+    packaged_contract = ReleaseArtifactContract.from_payload(packaged_payload)
+    if packaged_contract != contract:
+        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "release package contract does not match --release-contract")
 
 
 def _load_settings_arg(args: argparse.Namespace) -> UpdateToolSettings:

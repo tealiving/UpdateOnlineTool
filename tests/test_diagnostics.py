@@ -141,6 +141,81 @@ def test_write_diagnostic_archive_includes_allowed_files(tmp_path: Path) -> None
     assert "logs/updater.log" in names
 
 
+def test_collect_diagnostics_reports_and_archives_agent_operations(tmp_path: Path) -> None:
+    """验证 doctor 汇总 Agent 操作状态，并保留请求、交接和状态证据。"""
+    install_root = _write_install_root(tmp_path, current_version="1.0.0", entry_name="MyTool.exe")
+    operations_dir = install_root / "operations"
+    operations_dir.mkdir()
+    request_path = operations_dir / "update-001.request.json"
+    status_path = operations_dir / "update-001.status.json"
+    handoff_path = operations_dir / "update-001.handoff.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": "update-001",
+                "action": "apply",
+                "install_root": str(install_root),
+                "pending_path": str(install_root / "pending-update.json"),
+                "target_version": "",
+                "old_pid": 4321,
+                "wait_timeout": 60,
+                "handoff_timeout": 30,
+                "bootstrap_command": ["Product", "launch", "--password=not-for-support-bundles"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    handoff_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": "update-001",
+                "confirmed_at": "2026-07-16T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    status_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": "update-001",
+                "phase": "failed",
+                "message": "package hash mismatch",
+                "error": "PACKAGE_HASH_MISMATCH: package hash mismatch",
+                "agent_pid": 999,
+                "updated_at": "2026-07-16T00:00:01Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = collect_diagnostics(install_root=install_root)
+    archive_path = write_diagnostic_archive(
+        report=report,
+        install_root=install_root,
+        archive_path=tmp_path / "doctor.zip",
+    )
+
+    operation = report["agent_operations"]["operations"][0]
+    assert report["files"]["operations_dir"] is True
+    assert operation["operation_id"] == "update-001"
+    assert operation["request"]["action"] == "apply"
+    assert operation["handoff"]["confirmed_at"] == "2026-07-16T00:00:00Z"
+    assert operation["status"]["phase"] == "failed"
+    assert report["agent_operations"]["latest"]["error"] == "PACKAGE_HASH_MISMATCH: package hash mismatch"
+    assert "last agent operation failed: PACKAGE_HASH_MISMATCH: package hash mismatch" in report["problems"]
+    with zipfile.ZipFile(archive_path) as archive:
+        names = set(archive.namelist())
+        request_payload = archive.read("operations/update-001.request.json").decode("utf-8")
+    assert "operations/update-001.request.json" in names
+    assert "operations/update-001.handoff.json" in names
+    assert "operations/update-001.status.json" in names
+    assert "not-for-support-bundles" not in request_payload
+    assert "bootstrap_command_arg_count" in request_payload
+
+
 def _write_install_root(tmp_path: Path, *, current_version: str, entry_name: str) -> Path:
     """写入测试安装根。"""
     install_root = tmp_path / "install"

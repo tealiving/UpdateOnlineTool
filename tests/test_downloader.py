@@ -91,3 +91,27 @@ def test_copy_package_honors_cancellation(tmp_path: Path) -> None:
 
     assert calls == 1
     assert error.value.code is UpdateErrorCode.OPERATION_CANCELLED
+
+
+def test_copy_package_isolated_from_cleanup_of_legacy_predictable_temp_path(tmp_path: Path) -> None:
+    """并发清理旧 package.zip.tmp 时，当前复制事务仍能原子完成。"""
+    source = tmp_path / "source.zip"
+    target = tmp_path / "downloads" / "package.zip"
+    source.write_bytes(b"release")
+    legacy_temp = target.with_suffix(".zip.tmp")
+
+    def progress(current: int, total: int) -> None:
+        """模拟另一更新事务/清理器删除旧的固定临时文件名。"""
+        if current == total:
+            legacy_temp.unlink(missing_ok=True)
+
+    result = copy_package_with_verification(
+        source_path=source,
+        target_path=target,
+        expected_size=7,
+        expected_sha256=hashlib.sha256(b"release").hexdigest(),
+        progress=progress,
+    )
+
+    assert result.verified is True
+    assert target.read_bytes() == b"release"

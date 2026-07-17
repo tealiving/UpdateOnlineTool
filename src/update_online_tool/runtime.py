@@ -21,6 +21,7 @@ from update_online_tool.install_root import missing_current_json_message, normal
 from update_online_tool.installed import switch_installed_version as _switch_installed_version
 from update_online_tool.locks import runtime_lock
 from update_online_tool.manifest import UpdateManifest
+from update_online_tool.release_contract import normalize_release_required_paths, validate_release_artifact
 from update_online_tool.signature import verify_manifest_signature_with_key_file
 
 
@@ -170,6 +171,7 @@ def install_prepared_package(
     wait_pid: int | None = None,
     wait_timeout: float = 60.0,
     restart: bool = False,
+    release_required_paths: tuple[str, ...] | list[str] = (),
 ) -> RuntimeResult:
     """安装一个已准备好的升级包到 releases/<version>。
 
@@ -183,9 +185,11 @@ def install_prepared_package(
     :param wait_pid: 安装前等待退出的旧进程 PID。
     :param wait_timeout: 等待旧进程退出的超时时间，单位秒。
     :param restart: 安装成功后启动 current.json 指向的入口。
+    :param release_required_paths: 宿主要求 release 内存在的相对资源路径。
     :return: runtime 结果。
     """
     root = normalize_install_root(Path(install_root))
+    normalized_required_paths = normalize_release_required_paths(release_required_paths)
     package = Path(package_path)
     previous_version = _current_version(root)
     releases_root = root / "releases"
@@ -253,6 +257,14 @@ def install_prepared_package(
             releases_root.mkdir(parents=True, exist_ok=True)
             temp_release_dir.replace(target_release_dir)
             target_release_replaced = True
+            validate_release_artifact(
+                release_dir=target_release_dir,
+                version=manifest.version,
+                entry_path=resolved_entry_name,
+                app_id=manifest.app_id,
+                platform=manifest.platform,
+                required_paths=normalized_required_paths,
+            )
             sidecar_promotion = _promote_update_sidecars(extracted_root=target_release_dir, install_root=root)
             if switch_current:
                 write_update_status(
@@ -391,6 +403,7 @@ def apply_pending_update(
     wait_pid: int | None = None,
     wait_timeout: float = 60.0,
     restart: bool = False,
+    release_required_paths: tuple[str, ...] | list[str] | None = None,
 ) -> RuntimeResult:
     """读取 pending-update.json 并安装其中声明的包。
 
@@ -414,6 +427,7 @@ def apply_pending_update(
         wait_pid=wait_pid,
         wait_timeout=wait_timeout,
         restart=restart,
+        release_required_paths=release_required_paths,
     )
 
 
@@ -427,6 +441,7 @@ def apply_pending_payload(
     wait_pid: int | None = None,
     wait_timeout: float = 60.0,
     restart: bool = False,
+    release_required_paths: tuple[str, ...] | list[str] | None = None,
 ) -> RuntimeResult:
     """安装已读取并可验签的 pending payload。
 
@@ -450,6 +465,12 @@ def apply_pending_payload(
         verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(signature_key))
     manifest = UpdateManifest.from_payload(manifest_payload)
     resolved_entry_name = _pending_entry_name(payload, entry_name)
+    payload_required_paths = normalize_release_required_paths(payload.get("release_required_paths"))
+    effective_required_paths = (
+        payload_required_paths
+        if release_required_paths is None
+        else normalize_release_required_paths(release_required_paths)
+    )
     resolved_wait_pid = wait_pid
     if resolved_wait_pid is None:
         raw_old_pid = payload.get("old_pid")
@@ -471,6 +492,7 @@ def apply_pending_payload(
         wait_pid=resolved_wait_pid,
         wait_timeout=wait_timeout,
         restart=restart,
+        release_required_paths=effective_required_paths,
     )
 
 
@@ -484,6 +506,7 @@ def switch_installed_release(
     wait_pid: int | None = None,
     wait_timeout: float = 60.0,
     restart: bool = False,
+    release_required_paths: tuple[str, ...] | list[str] = (),
 ) -> RuntimeResult:
     """切换已安装版本并可等待旧进程退出后重启。
 
@@ -498,6 +521,7 @@ def switch_installed_release(
     :return: runtime 结果。
     """
     root = normalize_install_root(Path(install_root))
+    normalized_required_paths = normalize_release_required_paths(release_required_paths)
     target_version = str(version or "").strip()
     previous_version = _current_version(root)
     target_release_dir = root / "releases" / target_version
@@ -533,6 +557,7 @@ def switch_installed_release(
                 app_id=app_id,
                 platform=platform,
                 use_lock=False,
+                release_required_paths=normalized_required_paths,
             )
             restarted_pid = None
             message = "switched"
@@ -614,6 +639,7 @@ def rollback_installation(
     wait_pid: int | None = None,
     wait_timeout: float = 60.0,
     restart: bool = False,
+    release_required_paths: tuple[str, ...] | list[str] = (),
 ) -> RuntimeResult:
     """回滚到 current.json 中记录的 previous_version。
 
@@ -625,6 +651,7 @@ def rollback_installation(
     :return: runtime 结果。
     """
     root = normalize_install_root(Path(install_root))
+    normalized_required_paths = normalize_release_required_paths(release_required_paths)
     current_version = ""
     previous_version = ""
     release_dir = root / "releases"
@@ -664,6 +691,7 @@ def rollback_installation(
                 version=previous_version,
                 entry_name=entry_name,
                 use_lock=False,
+                release_required_paths=normalized_required_paths,
             )
             restarted_pid = None
             message = "rolled back"
@@ -767,6 +795,8 @@ def _is_process_alive(pid: int) -> bool:
     """跨平台检查进程是否仍存在。"""
     if sys.platform == "win32":
         return _is_windows_process_alive(pid)
+    if _reap_exited_child(pid):
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -775,7 +805,31 @@ def _is_process_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
-    return True
+    return not _is_posix_zombie(pid)
+
+
+def _reap_exited_child(pid: int) -> bool:
+    """若目标恰好是当前 updater 的已退出子进程，则回收并视为已退出。"""
+    try:
+        waited_pid, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return False
+    return waited_pid == pid
+
+
+def _is_posix_zombie(pid: int) -> bool:
+    """识别非子进程的 POSIX zombie，避免 os.kill(0) 造成等待超时误报。"""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and result.stdout.strip().upper().startswith("Z")
 
 
 def _is_windows_process_alive(pid: int) -> bool:

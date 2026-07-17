@@ -6,6 +6,11 @@
 
 UOT 的目标是把桌面应用在线更新能力从具体工具仓库中抽离出来。工具仓库只负责配置、GUI 展示和调用 UOT facade；UOT 负责 NAS 发布、版本发现、包校验、下载、安装、切换、回滚、状态记录和标准 updater 进程。
 
+当前默认多运行时路径为 `uot-bridge → Update Agent → UOT Core → 稳定 Bootstrap`。
+`uot-updater` 与 launcher sidecar 仍保留给既有 PyInstaller/PyQt 接入，属于兼容路径，
+不是 Electron/Tauri 的新实现方向。所有新 release 应携带 `uot-release.json`；安装、
+切换和回滚会校验其入口、版本和必需资源。
+
 设计原则：
 
 - 文件发布优先：NAS 是发布根，`latest.json`、`versions.json` 和 `package.zip` 是核心交付物。
@@ -57,6 +62,8 @@ UOT 拥有：
 | `runtime.py` | updater 运行态，负责安装、切换、回滚、锁、状态文件、旧进程等待和重启。 |
 | `installed.py` | 管理安装根 `releases/<version>` 和 `current.json`。 |
 | `pyinstaller_assembly.py` | 生成标准安装根、升级目录和 updater sidecar。 |
+| `release_contract.py` | 写入和校验 release 入口、版本、平台与宿主必需资源。 |
+| `agent.py` / `bridge_cli.py` | 提供 Agent ready/handoff 和 Electron/Tauri 的本地 JSON bridge。 |
 | `cli.py` | 发布端和运维端 CLI。 |
 | `updater_cli.py` | 打包进应用的窄 updater CLI，只保留安装、apply、切换、回滚和启动当前版本。 |
 

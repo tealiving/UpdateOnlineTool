@@ -2,6 +2,8 @@
 
 本文档说明其他工具项目如何安装 `update-online-tool`，并把它作为共享在线升级后端使用。
 
+如果需要先看完整的端到端用户和接入流程，请从 [用户与工具接入指南](user-guide.md) 开始。
+
 完整技术原理、模块职责、数据契约和流程图见 [technical-architecture.md](technical-architecture.md)。
 
 ## 1. 本包提供什么能力
@@ -24,7 +26,7 @@
 - GUI 组件或弹窗。
 - 内置 PyQt `QThread`。
 - 安装器界面。
-- GitHub、DevOps、HTTP、Electron、Rust 或 Tauri 的首版一等适配器。
+- GitHub、DevOps、HTTP 更新源，以及 `electron-builder` 或 Tauri 的打包/自动更新插件。
 
 ## 2. 前端兼容边界
 
@@ -32,16 +34,50 @@ SDK 本身是纯 Python，不导入 PyQt。接入方项目只要把耗时任务�
 
 - PyQt / PySide：首个已支持的集成目标。
 - Tkinter、wxPython、CLI 工具或服务进程：可以直接使用 SDK，但线程调度和 UI 行为由接入方负责。
-- Electron、Rust、Tauri 或其他非 Python 外壳：当前还不是一等支持目标。可以通过 Python sidecar 或 `uot` CLI 调用，但前端桥接和 updater 进程需要接入方自己实现。
+- Electron、Rust、Tauri 或其他非 Python 外壳：通过 `uot-bridge` 本地 JSON bridge 对接；宿主负责 Main Process/Rust command、IPC、用户确认、进程退出协调和自身构建产物。UOT 负责 NAS、manifest、下载校验、pending、updater、安装、切换和回滚。
 
 因此，首版定位是 **已支持 PyQt 对接**，不是 **只能用于 PyQt**。
+
+### Electron / Tauri Agent 交接更新
+
+将不含私钥的 bridge 配置与应用一同分发。Electron 必须只在 Main Process 启动 `uot-bridge`，再经 preload IPC 向 Renderer 暴露窄接口；Tauri 使用受控 Rust command。不要在 WebView 中读取 NAS、拼 manifest 路径或启动 updater。
+
+```bash
+uot-bridge check --config uot-bridge.json
+uot-bridge prepare --config uot-bridge.json --version 1.2.0 --old-pid <pid>
+uot-bridge agent-start --config uot-bridge.json --old-pid <pid>
+# Agent ready 后，宿主保存工作并确认交接
+uot-bridge agent-handoff --config uot-bridge.json --request <request-path>
+# 宿主退出；Agent 等待旧 PID、安装并由 Bootstrap 启动 active release
+```
+
+`prepare` 只下载、SHA-256 校验并写入 `pending-update.json`；`agent-start` 只在 Agent 写入 ready 后返回。宿主只能在确认业务数据已保存后调用 `agent-handoff`，随后不得直接修改 `current.json` 或启动 release。Electron 打包、macOS 公证与 Tauri staging 目录仍由接入项目负责。
+
+### Release 完整性契约
+
+新 release 在根目录写入 `uot-release.json`。构建脚本在打包前执行：
+
+```bash
+uot write-release-contract \
+  --release-dir dist/release --app my-tool --version 1.2.0 --platform macos \
+  --entry-path MyTool.app \
+  --required-path MyTool.app/Contents/Resources/uot/settings.json
+
+uot validate-release \
+  --release-dir dist/release --app my-tool --version 1.2.0 --platform macos \
+  --entry-path MyTool.app \
+  --required-path MyTool.app/Contents/Resources/uot/settings.json
+```
+
+Electron/Tauri bridge 配置可增加 `release_required_paths`。UOT 会用它过滤本地版本，
+并在 Agent 安装、切换、回滚前重复验证；不要只在 GUI 中扫描文件后放行。
 
 ## 3. 在工具项目中安装
 
 本地开发时：
 
 ```powershell
-python -m pip install -e D:\tealiving\peoject\UpdateOnlineTool\.worktrees\pyqt-nas-online-updater-20260608
+python -m pip install -e .
 ```
 
 内部正式包发布后，安装 wheel 或源码包：
@@ -333,7 +369,7 @@ uot install-prepared --install-root D:\Tools\MyTool --package <package_path-from
 uot doctor --install-root D:\Tools\MyTool --output diagnostics\doctor.json --archive diagnostics\doctor.zip
 ```
 
-诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。NAS 根路径可以是 UNC、`file://` 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符、`file://` 或反斜杠路径。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
+诊断报告包含安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock` 状态、已安装版本列表、日志摘要和常见问题判断。Bootstrap/Agent 模式还会汇总 `operations/` 下每个 request、handoff、status 的阶段和错误，并把脱敏 request 摘要及对应 handoff/status 文件放入诊断 zip；operation request 只能保存路径、PID、超时和 Bootstrap 命令，禁止放入凭据或私钥。NAS 根路径可以是 UNC、`file://` 或挂载路径，但 manifest `package.url` 必须是 `/` 风格相对路径，不能写 UNC、盘符、`file://` 或反斜杠路径。诊断 zip 不包含 `config/settings*.json` 或签名私钥。
 
 旧版平铺安装根可迁移到新架构：
 
@@ -376,9 +412,11 @@ CLI 写入的 NAS 目录结构：
         └── package.zip
 ```
 
-## 7. 在 Python 工具中使用 SDK
+## 7. PyInstaller legacy：在 Python 工具中使用 SDK
 
-GUI 工具项目应优先使用 `DesktopUpdateClient`。它是面向桌面应用的高层 facade，负责检查更新、列出远端版本、准备并启动标准 updater、切换本地版本、回滚和读取状态文件。工具项目只提供 `app_id`、安装根、settings 路径、平台和 GUI 展示逻辑。
+本节保留给已采用 `uot-updater` sidecar 的 PyInstaller 工具。新建 Electron/Tauri
+宿主使用 `uot-bridge → Update Agent → Bootstrap`，并遵循用户指南的宿主流程。
+`DesktopUpdateClient` 是面向桌面应用的高层 facade，负责检查更新、列出远端版本、准备并启动标准 updater、切换本地版本、回滚和读取状态文件。
 
 ```python
 from pathlib import Path
@@ -415,7 +453,7 @@ status = client.read_status()
 
 `UpdateService`、`prepare-version`、`pyqt_runtime` 仍保留给发布工具、测试脚本和旧项目兼容。新 GUI 不应自行拼 updater 命令，不应读取或修改 `current.json`，也不应构造版本目录里的 `latest.json` 路径。
 
-## 8. 标准 updater 运行时
+## 8. PyInstaller legacy 标准 updater 运行时
 
 最终应用应随安装根携带 UOT 打包出的 `updater/` sidecar。GUI 调用 `DesktopUpdateClient` 后，UOT 会通过该 updater 执行安装、切换、回滚、等待旧进程退出和重启。项目脚本只需要在发布前确保 `uot assemble-pyinstaller --updater-bundle <path>` 已把 sidecar 放入安装根和升级 zip。
 

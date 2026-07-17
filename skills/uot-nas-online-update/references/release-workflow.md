@@ -1,10 +1,25 @@
-# PyQt + NAS + UOT 发布流程
+# UOT NAS 桌面应用发布流程
+
+> 本文描述保留 `uot-updater` sidecar 的 legacy PyInstaller 交付路径。新的
+> PyQt/PySide、Electron 和 Tauri 接入应先遵循 `SKILL.md` 的 Bootstrap/Agent
+> 流程，并以 `docs/multi-runtime-architecture.md` 为发布契约；不要把本页的
+> `_launcher/` 或 `updater/` 布局带入新的多运行时 release。
+
+## 目录
+
+- [变量清单](#1-变量清单)
+- [初始化配置](#2-初始化配置)
+- [构建 PyInstaller](#3-构建-pyinstaller)
+- [装配安装目录和升级目录](#4-装配安装目录和升级目录)
+- [打包升级包](#5-打包升级包)
+- [发布到 NAS](#6-发布到-nas)
+- [跨平台命令约定](#跨平台命令约定)
 
 ## 1. 变量清单
 
 执行前先确认这些变量，缺失时从项目文档、spec、版本文件、配置文件或用户输入中获取：
 
-- `project_root`：PyQt 项目根目录。
+- `project_root`：桌面应用项目根目录。
 - `python_exe`：项目虚拟环境里的 Python。
 - `uot_exe`：同一环境中的 `uot` CLI。
 - `app_id`：发布到 NAS 的应用标识。
@@ -25,7 +40,7 @@
 优先生成项目本地配置，不要修改 pip 安装后的 UOT 包目录。
 
 ```powershell
-uot init --app <app_id> --nas-root <nas_root> --force
+uot init --app <app_id> --nas-root <nas_root>
 ```
 
 预期生成：
@@ -54,6 +69,9 @@ config/settings.json
 ```powershell
 uot init --app <app_id> --nas-root <nas_root> --force --skip-nas-check
 ```
+
+只有确认需要覆盖已有 `update-endpoint.json` 或 settings 文件时才增加
+`--force`；执行前先备份或检查现有配置。
 
 ## 3. 构建 PyInstaller
 
@@ -148,6 +166,24 @@ uot publish `
 
 `check`、`verify`、`list-remote`、`show-version`、`prepare-version` 等读取操作会按 `nas.roots` 顺序选择第一个可访问目录。`publish` 仍写入主 `nas.root`，不要依赖自动 fallback 发布；需要同步多个 NAS 时应切换 settings 或分别发布。
 
+## 跨平台命令约定
+
+上面的示例使用 PowerShell 续行符，适用于 Windows。macOS/Linux 使用反斜杠
+续行，并将 `Compress-Archive` 替换为 `zip`，例如：
+
+```bash
+python -m PyInstaller --noconfirm --clean <pyinstaller_spec>
+uot assemble-pyinstaller \
+  --dist-dir dist --version <target_version> \
+  --product-name <product_name> --platform <platform> \
+  --settings <settings_file>
+(cd "dist/<product_name>_update_v<target_version>" && \
+  zip -r "../<product_name>_<target_version>.zip" .)
+```
+
+命令参数和语义在三个平台一致；路径分隔符、环境变量写法和压缩工具按宿主
+系统调整。执行前可用 `uot <command> --help` 检查本地版本。
+
 校验：
 
 ```powershell
@@ -220,7 +256,7 @@ uot-updater launch-current --install-root <install_root>
 uot doctor --install-root <install_root> --output diagnostics\doctor.json --archive diagnostics\doctor.zip
 ```
 
-`doctor` 会收集安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock`、已安装版本列表和日志摘要。诊断包不包含 `config/settings*.json` 或签名私钥。
+`doctor` 会收集安装根路径摘要、写权限探针、UNC-like 提示、关键文件状态、`current.json`、`update-result.json`、`update-status.json`、`pending-update.json` 摘要、`update.lock`、已安装版本列表和日志摘要。Bootstrap/Agent 模式还会汇总并归档 `operations/` 内每个 request、handoff、status；支持包中的 request 会脱敏，request 本身只允许保存路径、PID、超时和 Bootstrap 命令，禁止包含凭据或私钥。诊断包不包含 `config/settings*.json` 或签名私钥。
 
 旧安装根迁移：
 
