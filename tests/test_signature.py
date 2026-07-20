@@ -24,7 +24,9 @@ def test_sign_manifest_payload_round_trips(tmp_path) -> None:
     key_path.write_text(generate_hmac_key() + "\n", encoding="utf-8")
     payload = _payload()
 
-    signed = sign_manifest_payload(payload, key=load_hmac_key(key_path), key_id="release")
+    signed = sign_manifest_payload(
+        payload, key=load_hmac_key(key_path), key_id="release"
+    )
     manifest = UpdateManifest.from_payload(signed)
     verify_manifest_signature(signed, key=load_hmac_key(key_path))
 
@@ -33,11 +35,24 @@ def test_sign_manifest_payload_round_trips(tmp_path) -> None:
     assert manifest.signature.key_id == "release"
 
 
+def test_hmac_signature_round_trips_with_secret_key_file(tmp_path) -> None:
+    """验证非 PEM 密钥文件仍可使用 HMAC 签名合同。"""
+    key_path = tmp_path / "signing.key"
+    key_path.write_text(generate_hmac_key() + "\n", encoding="utf-8")
+    signed = sign_manifest_payload(
+        _payload(), key=load_hmac_key(key_path), key_id="release"
+    )
+
+    verify_manifest_signature_with_key_file(signed, key_path=key_path)
+
+
 def test_verify_manifest_signature_rejects_tampering(tmp_path) -> None:
     """验证签名后的 manifest 被篡改会校验失败。"""
     key_path = tmp_path / "signing.key"
     key_path.write_text(generate_hmac_key() + "\n", encoding="utf-8")
-    signed = sign_manifest_payload(_payload(), key=load_hmac_key(key_path), key_id="release")
+    signed = sign_manifest_payload(
+        _payload(), key=load_hmac_key(key_path), key_id="release"
+    )
     signed["version"] = "9.9.9"
 
     with pytest.raises(UpdateError) as error:
@@ -51,9 +66,13 @@ def test_ed25519_signature_round_trips_with_public_key(tmp_path) -> None:
     private_key_path = tmp_path / "signing.key"
     public_key_path = tmp_path / "signing.pub"
     private_key_path.write_text(generate_ed25519_private_key_pem(), encoding="utf-8")
-    public_key_path.write_text(derive_ed25519_public_key_pem(private_key_path), encoding="utf-8")
+    public_key_path.write_text(
+        derive_ed25519_public_key_pem(private_key_path), encoding="utf-8"
+    )
 
-    signed = sign_manifest_payload_with_key_file(_payload(), key_path=private_key_path, key_id="release")
+    signed = sign_manifest_payload_with_key_file(
+        _payload(), key_path=private_key_path, key_id="release"
+    )
     manifest = UpdateManifest.from_payload(signed)
     verify_manifest_signature_with_key_file(signed, key_path=public_key_path)
 
@@ -67,12 +86,36 @@ def test_ed25519_signature_rejects_tampering(tmp_path) -> None:
     private_key_path = tmp_path / "signing.key"
     public_key_path = tmp_path / "signing.pub"
     private_key_path.write_text(generate_ed25519_private_key_pem(), encoding="utf-8")
-    public_key_path.write_text(derive_ed25519_public_key_pem(private_key_path), encoding="utf-8")
-    signed = sign_manifest_payload_with_key_file(_payload(), key_path=private_key_path, key_id="release")
+    public_key_path.write_text(
+        derive_ed25519_public_key_pem(private_key_path), encoding="utf-8"
+    )
+    signed = sign_manifest_payload_with_key_file(
+        _payload(), key_path=private_key_path, key_id="release"
+    )
     signed["version"] = "9.9.9"
 
     with pytest.raises(UpdateError) as error:
         verify_manifest_signature_with_key_file(signed, key_path=public_key_path)
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
+def test_ed25519_public_key_rejects_hmac_algorithm_downgrade(tmp_path) -> None:
+    """验证公开 PEM 不能被攻击者降级为已知密钥的 HMAC 验签。"""
+    private_key_path = tmp_path / "signing.key"
+    public_key_path = tmp_path / "signing.pub"
+    private_key_path.write_text(generate_ed25519_private_key_pem(), encoding="utf-8")
+    public_key_path.write_text(
+        derive_ed25519_public_key_pem(private_key_path), encoding="utf-8"
+    )
+    forged = sign_manifest_payload(
+        _payload(), key=load_hmac_key(public_key_path), key_id="attacker"
+    )
+
+    with pytest.raises(
+        UpdateError, match="PEM signature key requires ed25519"
+    ) as error:
+        verify_manifest_signature_with_key_file(forged, key_path=public_key_path)
 
     assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
 
