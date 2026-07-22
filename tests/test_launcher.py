@@ -64,6 +64,38 @@ def test_launcher_rejects_missing_updater(tmp_path: Path) -> None:
     assert error.value.code is UpdateErrorCode.UPDATER_NOT_FOUND
 
 
+def test_launcher_stages_sidecar_before_starting_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """验证 sidecar updater 从临时副本运行，以便安装过程替换原目录。"""
+    updater = tmp_path / "install" / "updater" / "MyToolUpdater" / "MyToolUpdater.exe"
+    updater.parent.mkdir(parents=True)
+    updater.write_text("updater", encoding="utf-8")
+    (updater.parent / "_internal").mkdir()
+    (updater.parent / "_internal" / "runtime.dll").write_text("runtime", encoding="utf-8")
+    pending = tmp_path / "install" / "pending-update.json"
+    stage_root = tmp_path / "stage"
+    stage_root.mkdir()
+    monkeypatch.setattr("update_online_tool.launcher.tempfile.mkdtemp", lambda prefix: str(stage_root))
+    calls: list[list[str]] = []
+
+    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+        calls.append(args)
+
+        class Process:
+            pid = 321
+
+        return Process()
+
+    StandaloneUpdaterLauncher(updater, popen=popen).launch(
+        pending_payload={"package_path": "package.zip"},
+        pending_manifest_path=pending,
+    )
+
+    staged_updater = stage_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe"
+    assert calls[0][0] == str(staged_updater)
+    assert staged_updater.read_text(encoding="utf-8") == "updater"
+    assert (staged_updater.parent / "_internal" / "runtime.dll").read_text(encoding="utf-8") == "runtime"
+
+
 def test_launcher_passes_restart_executable_as_entry_name(tmp_path: Path) -> None:
     """验证 pending 重启入口会传递给标准 updater。
 

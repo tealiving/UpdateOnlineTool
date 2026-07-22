@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,7 +85,8 @@ class StandaloneUpdaterLauncher:
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"pending manifest is not valid JSON: {pending_path}") from exc
         if not isinstance(pending_payload, dict):
             raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"pending manifest must be a JSON object: {pending_path}")
-        command = [str(self.updater_executable), "apply", "--pending", str(pending_path)]
+        updater_executable, staged_root = self._stage_sidecar_updater(pending_path)
+        command = [str(updater_executable), "apply", "--pending", str(pending_path)]
         restart = _coerce_bool(pending_payload.get("restart"), default=True)
         if restart:
             command.append("--restart")
@@ -104,13 +107,15 @@ class StandaloneUpdaterLauncher:
         try:
             process = self._popen(
                 command,
-                cwd=str(self.updater_executable.parent),
+                cwd=str(updater_executable.parent),
                 close_fds=True,
             )
         except OSError as exc:
+            if staged_root is not None:
+                shutil.rmtree(staged_root, ignore_errors=True)
             raise UpdateError(
                 UpdateErrorCode.UPDATER_LAUNCH_FAILED,
-                f"updater launch failed: {self.updater_executable}",
+                f"updater launch failed: {updater_executable}",
             ) from exc
         return LaunchResult(
             started=True,
@@ -122,6 +127,21 @@ class StandaloneUpdaterLauncher:
         """确认独立 updater 已就绪。"""
         if not self.updater_executable.is_file():
             raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"updater not found: {self.updater_executable}")
+
+    def _stage_sidecar_updater(self, pending_path: Path) -> tuple[Path, Path | None]:
+        """从临时副本运行安装根 sidecar，避免 Windows 锁住待升级的 updater。"""
+        sidecar_root = pending_path.parent / "updater"
+        try:
+            relative_executable = self.updater_executable.relative_to(sidecar_root)
+        except ValueError:
+            return self.updater_executable, None
+        staged_root = Path(tempfile.mkdtemp(prefix="uot-updater-"))
+        try:
+            shutil.copytree(sidecar_root, staged_root / "updater", symlinks=True)
+        except OSError as exc:
+            shutil.rmtree(staged_root, ignore_errors=True)
+            raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater staging failed: {self.updater_executable}") from exc
+        return staged_root / "updater" / relative_executable, staged_root
 
 
 def _coerce_positive_int(value: object) -> int | None:
