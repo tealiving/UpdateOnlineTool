@@ -19,7 +19,11 @@ from update_online_tool.agent import (
     write_agent_handoff,
     write_agent_request,
 )
-from update_online_tool.desktop import DesktopUpdateClient, DesktopUpdateConfig, PreparedRemoteUpdate
+from update_online_tool.desktop import (
+    DesktopUpdateClient,
+    DesktopUpdateConfig,
+    PreparedRemoteUpdate,
+)
 from update_online_tool.installed import (
     InstalledVersion,
     MigrationResult,
@@ -28,7 +32,11 @@ from update_online_tool.installed import (
     switch_installed_version,
 )
 from update_online_tool.launcher import LaunchResult, StandaloneUpdaterLauncher
-from update_online_tool.manifest import ManifestSignature, UpdateManifest, UpdatePackageInfo
+from update_online_tool.manifest import (
+    ManifestSignature,
+    UpdateManifest,
+    UpdatePackageInfo,
+)
 from update_online_tool.migration_package import (
     MigrationPackageResult,
     MigrationPackageVerification,
@@ -75,7 +83,12 @@ from update_online_tool.runtime import (
     write_update_status,
 )
 from update_online_tool.service import CheckUpdateResult, RemoteVersion, UpdateService
-from update_online_tool.settings import UPDATE_SETTINGS_FILE_ENV, UpdateToolSettings, resolve_settings_path, user_settings_path
+from update_online_tool.settings import (
+    UPDATE_SETTINGS_FILE_ENV,
+    UpdateToolSettings,
+    resolve_settings_path,
+    user_settings_path,
+)
 from update_online_tool.signature import (
     ED25519_SIGNATURE_ALGORITHM,
     SIGNATURE_ALGORITHM,
@@ -91,7 +104,7 @@ from update_online_tool.signature import (
 )
 from update_online_tool.versioning import UpdateDecision
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 __all__ = [
     "UpdateError",

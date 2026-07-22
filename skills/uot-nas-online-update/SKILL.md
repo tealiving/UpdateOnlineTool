@@ -66,10 +66,21 @@ transaction, and launches the stable Bootstrap.
 
 Use `scripts/check_uot_artifacts.py` to inspect an assembled install root. Pass
 `--mode bootstrap-agent` for the current durable runtime, or `--mode legacy` for
-an existing updater-sidecar release. Read `references/release-workflow.md` for a
-full release operation and `references/troubleshooting.md` when installation,
-restart, NAS access, or version switching fails.
+an existing updater-sidecar release. For a same-platform legacy build, always
+pass `--smoke-updater --updater-relative <path>` so the gate executes the actual
+sidecar with `--help`; file existence alone cannot distinguish a true PyInstaller
+onefile from an onedir bootloader missing its `_internal` runtime. When supplying
+`updater_bundle`, pass a file only when it is independently executable; otherwise
+pass the complete onedir directory and validate the nested updater entry.
+
+Read `references/release-workflow.md` for a full release operation and
+`references/troubleshooting.md` when installation, restart, NAS access, or
+version switching fails.
 
 Before handoff, verify the package and release contract. Test at least one real
 old-process exit, Agent ready/handoff, `current.json` switch, stable Bootstrap
-restart, local switch, and rollback on every shipped platform.
+restart, local switch, and rollback on every shipped platform. For a legacy
+release, a real old-version-to-new-version update is a publish blocker: confirm
+that the updater writes status/result, installs `releases/<version>`, switches
+`current.json`, and starts the selected entry. Do not substitute ZIP, signature,
+manifest, or path-existence checks for this transaction.

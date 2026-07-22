@@ -12,12 +12,26 @@ from typing import Any
 
 from update_online_tool.downloader import CancellationToken, PreparedPackage
 from update_online_tool.errors import UpdateError, UpdateErrorCode
-from update_online_tool.install_root import missing_current_json_message, missing_updater_message, normalize_install_root
+from update_online_tool.install_root import (
+    missing_current_json_message,
+    missing_updater_message,
+    normalize_install_root,
+)
 from update_online_tool.installed import InstalledVersion, list_installed_versions
-from update_online_tool.launcher import LaunchResult, PopenFactory, StandaloneUpdaterLauncher
+from update_online_tool.launcher import (
+    LaunchResult,
+    PopenFactory,
+    StandaloneUpdaterLauncher,
+    launch_updater_process,
+)
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.release_contract import normalize_release_required_paths
-from update_online_tool.service import CheckUpdateResult, ProgressCallback, RemoteVersion, UpdateService
+from update_online_tool.service import (
+    CheckUpdateResult,
+    ProgressCallback,
+    RemoteVersion,
+    UpdateService,
+)
 from update_online_tool.settings import UpdateToolSettings
 from update_online_tool.signature import verify_manifest_signature_with_key_file
 
@@ -83,7 +97,9 @@ class DesktopUpdateClient:
         :return: None
         """
         self.config = config
-        self.settings = settings or UpdateToolSettings.load(config.settings_path, app_id=config.app_id)
+        self.settings = settings or UpdateToolSettings.load(
+            config.settings_path, app_id=config.app_id
+        )
         self.service = UpdateService(self.settings)
         self._popen = popen or subprocess.Popen
 
@@ -118,7 +134,9 @@ class DesktopUpdateClient:
         self._verify_manifest_if_needed(result.manifest)
         return result
 
-    def list_remote_versions(self, *, include_hidden: bool = False) -> list[RemoteVersion]:
+    def list_remote_versions(
+        self, *, include_hidden: bool = False
+    ) -> list[RemoteVersion]:
         """列出远端历史版本。
 
         :param include_hidden: 是否包含隐藏版本。
@@ -199,7 +217,9 @@ class DesktopUpdateClient:
             restart=restart,
             force=force,
         )
-        pending_path = StandaloneUpdaterLauncher(self._updater_executable(), popen=self._popen).write_pending(
+        pending_path = StandaloneUpdaterLauncher(
+            self._updater_executable(), popen=self._popen
+        ).write_pending(
             pending_payload=pending_payload,
             pending_manifest_path=self.pending_path(),
         )
@@ -212,7 +232,9 @@ class DesktopUpdateClient:
 
     def launch_pending_update(self) -> LaunchResult:
         """启动已由 :meth:`prepare_remote_version` 写入的标准 updater。"""
-        return StandaloneUpdaterLauncher(self._updater_executable(), popen=self._popen).launch_existing_pending(
+        return StandaloneUpdaterLauncher(
+            self._updater_executable(), popen=self._popen
+        ).launch_existing_pending(
             pending_manifest_path=self.pending_path(),
         )
 
@@ -230,8 +252,9 @@ class DesktopUpdateClient:
         :param restart: 切换后是否重启。
         :return: updater 启动结果。
         """
+        updater = self._updater_executable()
         command = [
-            str(self._updater_executable()),
+            str(updater),
             "switch-installed",
             "--install-root",
             str(self.install_root()),
@@ -239,37 +262,66 @@ class DesktopUpdateClient:
             str(version),
         ]
         if old_pid is not None:
-            command.extend(["--wait-pid", str(int(old_pid)), "--wait-timeout", str(float(self.config.wait_timeout))])
+            command.extend(
+                [
+                    "--wait-pid",
+                    str(int(old_pid)),
+                    "--wait-timeout",
+                    str(float(self.config.wait_timeout)),
+                ]
+            )
         if restart:
             command.append("--restart")
-        try:
-            process = self._popen(command, cwd=str(self._updater_executable().parent), close_fds=True)
-        except OSError as exc:
-            raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {self._updater_executable()}") from exc
-        return LaunchResult(started=True, updater_pid=getattr(process, "pid", None), pending_manifest_path=None)
+        process = launch_updater_process(
+            command,
+            updater_executable=updater,
+            popen=self._popen,
+            require_running=old_pid is not None,
+        )
+        return LaunchResult(
+            started=True,
+            updater_pid=getattr(process, "pid", None),
+            pending_manifest_path=None,
+        )
 
-    def rollback(self, *, old_pid: int | None = None, restart: bool = True) -> LaunchResult:
+    def rollback(
+        self, *, old_pid: int | None = None, restart: bool = True
+    ) -> LaunchResult:
         """启动标准 updater 回滚到 previous_version。
 
         :param old_pid: 旧 GUI 进程号。
         :param restart: 回滚后是否重启。
         :return: updater 启动结果。
         """
+        updater = self._updater_executable()
         command = [
-            str(self._updater_executable()),
+            str(updater),
             "rollback",
             "--install-root",
             str(self.install_root()),
         ]
         if old_pid is not None:
-            command.extend(["--wait-pid", str(int(old_pid)), "--wait-timeout", str(float(self.config.wait_timeout))])
+            command.extend(
+                [
+                    "--wait-pid",
+                    str(int(old_pid)),
+                    "--wait-timeout",
+                    str(float(self.config.wait_timeout)),
+                ]
+            )
         if restart:
             command.append("--restart")
-        try:
-            process = self._popen(command, cwd=str(self._updater_executable().parent), close_fds=True)
-        except OSError as exc:
-            raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {self._updater_executable()}") from exc
-        return LaunchResult(started=True, updater_pid=getattr(process, "pid", None), pending_manifest_path=None)
+        process = launch_updater_process(
+            command,
+            updater_executable=updater,
+            popen=self._popen,
+            require_running=old_pid is not None,
+        )
+        return LaunchResult(
+            started=True,
+            updater_pid=getattr(process, "pid", None),
+            pending_manifest_path=None,
+        )
 
     def prewarm_updater(self, *, timeout: float = 20.0) -> float:
         """后台预热标准 updater，降低首次版本切换的可见等待。
@@ -299,7 +351,10 @@ class DesktopUpdateClient:
         except TypeError:
             process = self._popen(command, cwd=str(updater.parent), close_fds=True)
         except OSError as exc:
-            raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {updater}") from exc
+            raise UpdateError(
+                UpdateErrorCode.UPDATER_LAUNCH_FAILED,
+                f"updater launch failed: {updater}",
+            ) from exc
         try:
             if hasattr(process, "communicate"):
                 process.communicate(timeout=float(timeout))
@@ -308,7 +363,16 @@ class DesktopUpdateClient:
         except subprocess.TimeoutExpired as exc:
             if hasattr(process, "kill"):
                 process.kill()
-            raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater prewarm timeout: {updater}") from exc
+            raise UpdateError(
+                UpdateErrorCode.UPDATER_LAUNCH_FAILED,
+                f"updater prewarm timeout: {updater}",
+            ) from exc
+        return_code = getattr(process, "returncode", None)
+        if return_code not in {None, 0}:
+            raise UpdateError(
+                UpdateErrorCode.UPDATER_LAUNCH_FAILED,
+                f"updater prewarm failed with exit code {return_code}: {updater}",
+            )
         return time.perf_counter() - started_at
 
     def read_status(self) -> dict[str, Any]:
@@ -334,7 +398,9 @@ class DesktopUpdateClient:
             item
             for item in list_installed_versions(
                 install_root=self.install_root(),
-                release_required_paths=normalize_release_required_paths(self.config.release_required_paths),
+                release_required_paths=normalize_release_required_paths(
+                    self.config.release_required_paths
+                ),
             )
             if item.release_valid
         ]
@@ -372,7 +438,11 @@ class DesktopUpdateClient:
 
         :return: 准备包下载目录。
         """
-        return Path(self.config.download_dir) if self.config.download_dir is not None else self.install_root() / "updates"
+        return (
+            Path(self.config.download_dir)
+            if self.config.download_dir is not None
+            else self.install_root() / "updates"
+        )
 
     def _updater_executable(self) -> Path:
         """解析标准 updater 可执行文件路径。
@@ -385,7 +455,9 @@ class DesktopUpdateClient:
             self.install_root() / "updater" / configured.stem / configured.name,
         ]
         if configured.suffix:
-            candidates.append(self.install_root() / "updater" / configured.stem / configured.stem)
+            candidates.append(
+                self.install_root() / "updater" / configured.stem / configured.stem
+            )
         for candidate in candidates:
             if candidate.is_file():
                 return candidate
@@ -398,13 +470,21 @@ class DesktopUpdateClient:
         """
         path = self.install_root() / "current.json"
         if not path.is_file():
-            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, missing_current_json_message(self.install_root()))
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_NOT_FOUND,
+                missing_current_json_message(self.install_root()),
+            )
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"current.json is not valid JSON: {path}") from exc
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID,
+                f"current.json is not valid JSON: {path}",
+            ) from exc
         if not isinstance(payload, dict):
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "current.json must be a JSON object")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID, "current.json must be a JSON object"
+            )
         return payload
 
     def _current_entry_name(self) -> str:
@@ -421,7 +501,9 @@ class DesktopUpdateClient:
         executable = payload.get("executable")
         if isinstance(executable, str) and executable.strip():
             return executable.strip()
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json has no entry path")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, "current.json has no entry path"
+        )
 
     def _pending_payload(
         self,
@@ -448,7 +530,9 @@ class DesktopUpdateClient:
             "restart_executable": self._current_entry_name(),
             "restart": bool(restart),
             "force": bool(force),
-            "release_required_paths": list(normalize_release_required_paths(self.config.release_required_paths)),
+            "release_required_paths": list(
+                normalize_release_required_paths(self.config.release_required_paths)
+            ),
         }
         if old_pid is not None:
             payload["old_pid"] = int(old_pid)
@@ -465,7 +549,9 @@ class DesktopUpdateClient:
         """
         if self.config.signature_key is None:
             return
-        verify_manifest_signature_with_key_file(manifest.to_payload(), key_path=Path(self.config.signature_key))
+        verify_manifest_signature_with_key_file(
+            manifest.to_payload(), key_path=Path(self.config.signature_key)
+        )
 
     def _read_json_state(self, filename: str) -> dict[str, Any]:
         """读取安装根状态 JSON。

@@ -342,7 +342,9 @@ uot assemble-pyinstaller `
   --force
 ```
 
-`--updater-bundle` 可以是 PyInstaller onefile 文件或 onedir 目录，装配后会进入安装根 `updater\` 和升级目录 `updater\`。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater\`；接入方脚本不应再手工复制根目录 updater 或 `_launcher\updater`。升级 zip 不应预置 `latest.json`、`pending-update.json`、`update-result.json` 或 `update-status.json`。
+`--updater-bundle` 可以是 PyInstaller onefile 文件或 onedir 目录，装配后会进入安装根 `updater\` 和升级目录 `updater\`。只有能够脱离相邻 `_internal` 独立执行的产物才属于 onefile；如果 spec 使用 `EXE(..., exclude_binaries=True)`，必须传入包含可执行文件与 `_internal` 的完整 onedir 目录，不能只传其中的 bootloader 文件。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater\`；接入方脚本不应再手工复制根目录 updater 或 `_launcher\updater`。升级 zip 不应预置 `latest.json`、`pending-update.json`、`update-result.json` 或 `update-status.json`。
+
+同平台发布前必须从最终安装目录执行 updater 的 `--help` smoke 并检查退出码为 0。仅检查文件存在无法发现缺失 `_internal/Python` 或 `_internal/python*.dll` 的不完整 onedir。
 
 ```powershell
 uot-updater install --install-root D:\Tools\MyTool --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version> --signature-key config\uot-signing.pub --wait-pid 12345 --wait-timeout 60 --restart
@@ -449,7 +451,7 @@ client.prewarm_updater(timeout=20.0)
 status = client.read_status()
 ```
 
-`prewarm_updater()` 是可选启动体验优化，适合 GUI 启动后空闲时在后台线程调用，用于把打包 updater 的首次加载成本前移。它不改变安装、切换、回滚语义；预热失败应记录或静默降级，不应阻止检查更新、文件处理、安装、切换或回滚。接入方不应为了预热自行解析 updater 路径或拼 `uot-updater` 命令。
+`prewarm_updater()` 是可选启动体验优化，适合 GUI 启动后空闲时在后台线程调用，用于把打包 updater 的首次加载成本前移。UOT 会把 `--help` 非零退出视为 `UPDATER_LAUNCH_FAILED`，避免把缺 runtime 的 sidecar 误报为预热成功。预热失败应记录为制品健康告警，但不应阻止检查更新或其他业务；实际安装、本地切换和回滚交接都会执行启动早退检测并 fail-closed。接入方不应为了预热自行解析 updater 路径或拼 `uot-updater` 命令。
 
 `UpdateService`、`prepare-version`、`pyqt_runtime` 仍保留给发布工具、测试脚本和旧项目兼容。新 GUI 不应自行拼 updater 命令，不应读取或修改 `current.json`，也不应构造版本目录里的 `latest.json` 路径。
 

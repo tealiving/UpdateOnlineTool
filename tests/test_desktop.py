@@ -12,7 +12,11 @@ from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.downloader import CancellationToken
 from update_online_tool.desktop import DesktopUpdateClient, DesktopUpdateConfig
 from update_online_tool.settings import UpdateToolSettings
-from update_online_tool.signature import generate_hmac_key, load_hmac_key, sign_manifest_payload
+from update_online_tool.signature import (
+    generate_hmac_key,
+    load_hmac_key,
+    sign_manifest_payload,
+)
 from update_online_tool.versioning import UpdateDecision
 
 
@@ -36,7 +40,9 @@ def test_desktop_client_normalizes_release_dir_install_root(tmp_path: Path) -> N
     :return: None
     """
     install_root = _write_install_root(tmp_path, version="1.0.0")
-    client = _client(install_root=install_root / "releases" / "1.0.0", nas_root=tmp_path / "nas")
+    client = _client(
+        install_root=install_root / "releases" / "1.0.0", nas_root=tmp_path / "nas"
+    )
 
     assert client.install_root() == install_root
     assert client.current_version() == "1.0.0"
@@ -53,7 +59,9 @@ def test_desktop_client_check_rejects_tampered_signed_manifest(tmp_path: Path) -
     payload = json.loads(latest_path.read_text(encoding="utf-8"))
     payload["notes"] = "tampered"
     latest_path.write_text(json.dumps(payload), encoding="utf-8")
-    client = _client(install_root=install_root, nas_root=nas_root, signature_key=key_path)
+    client = _client(
+        install_root=install_root, nas_root=nas_root, signature_key=key_path
+    )
 
     with pytest.raises(UpdateError) as error:
         client.check()
@@ -74,7 +82,9 @@ def test_desktop_client_lists_remote_versions(tmp_path: Path) -> None:
     assert [item.version for item in versions] == ["1.1.0", "1.0.9"]
 
 
-def test_desktop_client_list_remote_versions_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
+def test_desktop_client_list_remote_versions_rejects_tampered_signed_manifest(
+    tmp_path: Path,
+) -> None:
     """验证桌面历史版本列表阶段也校验 manifest 签名。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
     nas_root = tmp_path / "nas"
@@ -85,7 +95,9 @@ def test_desktop_client_list_remote_versions_rejects_tampered_signed_manifest(tm
     payload = json.loads(version_manifest_path.read_text(encoding="utf-8"))
     payload["notes"] = "tampered"
     version_manifest_path.write_text(json.dumps(payload), encoding="utf-8")
-    client = _client(install_root=install_root, nas_root=nas_root, signature_key=key_path)
+    client = _client(
+        install_root=install_root, nas_root=nas_root, signature_key=key_path
+    )
 
     with pytest.raises(UpdateError) as error:
         client.list_remote_versions()
@@ -95,7 +107,9 @@ def test_desktop_client_list_remote_versions_rejects_tampered_signed_manifest(tm
 
 def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) -> None:
     """验证桌面客户端准备远端包并启动标准 updater。"""
-    install_root = _write_install_root(tmp_path, version="1.0.0", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, version="1.0.0", entry_name="MyTool.exe"
+    )
     updater = install_root / "updater" / "MyToolUpdater.exe"
     updater.parent.mkdir()
     updater.write_text("updater", encoding="utf-8")
@@ -155,14 +169,18 @@ def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) 
 
 def test_desktop_client_can_prepare_before_starting_updater(tmp_path: Path) -> None:
     """宿主可先准备 pending，再在退出协调完成后启动 updater。"""
-    install_root = _write_install_root(tmp_path, version="1.0.0", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, version="1.0.0", entry_name="MyTool.exe"
+    )
     updater = install_root / "updater" / "MyToolUpdater.exe"
     updater.parent.mkdir()
     updater.write_text("updater", encoding="utf-8")
     nas_root = tmp_path / "nas"
     _write_manifest(nas_root, version="1.1.0", content=b"package")
     calls: list[list[str]] = []
-    client = _client(install_root=install_root, nas_root=nas_root, popen=_popen_recorder(calls))
+    client = _client(
+        install_root=install_root, nas_root=nas_root, popen=_popen_recorder(calls)
+    )
 
     prepared = client.prepare_remote_version("1.1.0", old_pid=123, restart=True)
 
@@ -191,9 +209,13 @@ def test_desktop_client_can_prepare_before_starting_updater(tmp_path: Path) -> N
     ]
 
 
-def test_desktop_client_prepares_for_agent_handoff_without_updater(tmp_path: Path) -> None:
+def test_desktop_client_prepares_for_agent_handoff_without_updater(
+    tmp_path: Path,
+) -> None:
     """Agent 模式准备 pending 时不应依赖旧 updater sidecar。"""
-    install_root = _write_install_root(tmp_path, version="1.0.0", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, version="1.0.0", entry_name="MyTool.exe"
+    )
     nas_root = tmp_path / "nas"
     _write_manifest(nas_root, version="1.1.0", content=b"package")
     client = _client(install_root=install_root, nas_root=nas_root)
@@ -209,14 +231,20 @@ def test_desktop_client_prepares_for_agent_handoff_without_updater(tmp_path: Pat
     assert error.value.code is UpdateErrorCode.UPDATER_NOT_FOUND
 
 
-def test_desktop_client_switches_installed_version_through_updater(tmp_path: Path) -> None:
+def test_desktop_client_switches_installed_version_through_updater(
+    tmp_path: Path,
+) -> None:
     """验证桌面客户端通过标准 updater 切换本地版本。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
     updater = install_root / "updater" / "MyToolUpdater.exe"
     updater.parent.mkdir()
     updater.write_text("updater", encoding="utf-8")
     calls: list[list[str]] = []
-    client = _client(install_root=install_root, nas_root=tmp_path / "nas", popen=_popen_recorder(calls))
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=_popen_recorder(calls),
+    )
 
     result = client.switch_installed_version("1.0.9", old_pid=123, restart=True)
 
@@ -239,6 +267,48 @@ def test_desktop_client_switches_installed_version_through_updater(tmp_path: Pat
     ]
 
 
+def test_desktop_client_switch_rejects_updater_that_exits_during_startup(
+    tmp_path: Path,
+) -> None:
+    """本地切换时 updater 立即失败不得被报告为启动成功。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=_popen_immediate_failure,
+    )
+
+    with pytest.raises(UpdateError) as error:
+        client.switch_installed_version("1.0.9", old_pid=123, restart=True)
+
+    assert error.value.code is UpdateErrorCode.UPDATER_LAUNCH_FAILED
+    assert "exit code 255" in str(error.value)
+
+
+def test_desktop_client_switch_rejects_zero_exit_before_old_process_handoff(
+    tmp_path: Path,
+) -> None:
+    """本地切换等待旧 GUI 时不得接受 updater 提前返回零。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=_popen_immediate_success,
+    )
+
+    with pytest.raises(UpdateError) as error:
+        client.switch_installed_version("1.0.9", old_pid=123, restart=True)
+
+    assert error.value.code is UpdateErrorCode.UPDATER_LAUNCH_FAILED
+    assert "before old process handoff" in str(error.value)
+
+
 def test_desktop_client_rolls_back_through_updater(tmp_path: Path) -> None:
     """验证桌面客户端通过标准 updater 回滚本地版本。"""
     install_root = _write_install_root(tmp_path, version="1.0.9")
@@ -246,7 +316,11 @@ def test_desktop_client_rolls_back_through_updater(tmp_path: Path) -> None:
     updater.parent.mkdir()
     updater.write_text("updater", encoding="utf-8")
     calls: list[list[str]] = []
-    client = _client(install_root=install_root, nas_root=tmp_path / "nas", popen=_popen_recorder(calls))
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=_popen_recorder(calls),
+    )
 
     result = client.rollback(old_pid=123, restart=True)
 
@@ -267,6 +341,48 @@ def test_desktop_client_rolls_back_through_updater(tmp_path: Path) -> None:
     ]
 
 
+def test_desktop_client_rollback_rejects_updater_that_exits_during_startup(
+    tmp_path: Path,
+) -> None:
+    """回滚时 updater 立即失败不得被报告为启动成功。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=_popen_immediate_failure,
+    )
+
+    with pytest.raises(UpdateError) as error:
+        client.rollback(old_pid=123, restart=True)
+
+    assert error.value.code is UpdateErrorCode.UPDATER_LAUNCH_FAILED
+    assert "exit code 255" in str(error.value)
+
+
+def test_desktop_client_rollback_rejects_zero_exit_before_old_process_handoff(
+    tmp_path: Path,
+) -> None:
+    """回滚等待旧 GUI 时不得接受 updater 提前返回零。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=_popen_immediate_success,
+    )
+
+    with pytest.raises(UpdateError) as error:
+        client.rollback(old_pid=123, restart=True)
+
+    assert error.value.code is UpdateErrorCode.UPDATER_LAUNCH_FAILED
+    assert "before old process handoff" in str(error.value)
+
+
 def test_desktop_client_prewarms_updater(tmp_path: Path) -> None:
     """验证桌面客户端可预热标准 updater。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
@@ -274,7 +390,11 @@ def test_desktop_client_prewarms_updater(tmp_path: Path) -> None:
     updater.parent.mkdir()
     updater.write_text("updater", encoding="utf-8")
     calls: list[tuple[list[str], dict[str, object]]] = []
-    client = _client(install_root=install_root, nas_root=tmp_path / "nas", popen=_popen_wait_recorder(calls))
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=_popen_wait_recorder(calls),
+    )
 
     elapsed = client.prewarm_updater(timeout=12.5)
 
@@ -288,7 +408,57 @@ def test_desktop_client_prewarms_updater(tmp_path: Path) -> None:
     assert "stderr" in kwargs
 
 
-def test_desktop_client_prewarms_updater_from_release_dir_install_root(tmp_path: Path) -> None:
+def test_desktop_client_prewarm_rejects_nonzero_updater_exit(tmp_path: Path) -> None:
+    """updater 无法加载运行时时，预热必须返回结构化失败。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None。
+    """
+
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
+        """返回模拟 PyInstaller runtime 加载失败的进程。
+
+        :param args: 进程参数。
+        :param kwargs: Popen 关键字参数。
+        :return: 失败进程。
+        """
+
+        del args, kwargs
+
+        class Process:
+            """模拟立即以 255 退出的 updater。"""
+
+            returncode = 255
+
+            def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+                """模拟进程结束。
+
+                :param timeout: 等待超时。
+                :return: 空输出。
+                """
+
+                del timeout
+                return b"", b""
+
+        return Process()
+
+    client = _client(install_root=install_root, nas_root=tmp_path / "nas", popen=popen)
+
+    with pytest.raises(UpdateError) as error:
+        client.prewarm_updater()
+
+    assert error.value.code is UpdateErrorCode.UPDATER_LAUNCH_FAILED
+    assert "exit code 255" in str(error.value)
+
+
+def test_desktop_client_prewarms_updater_from_release_dir_install_root(
+    tmp_path: Path,
+) -> None:
     """验证误传 release 目录时 updater 预热仍定位安装根 sidecar。
 
     :param tmp_path: pytest 临时目录
@@ -312,14 +482,18 @@ def test_desktop_client_prewarms_updater_from_release_dir_install_root(tmp_path:
     assert kwargs["cwd"] == str(updater.parent)
 
 
-def test_desktop_client_prewarm_reports_release_dir_hint_when_updater_missing(tmp_path: Path) -> None:
+def test_desktop_client_prewarm_reports_release_dir_hint_when_updater_missing(
+    tmp_path: Path,
+) -> None:
     """验证 updater 缺失时保留 release 目录误传诊断。
 
     :param tmp_path: pytest 临时目录
     :return: None
     """
     install_root = _write_install_root(tmp_path, version="1.0.0")
-    client = _client(install_root=install_root / "releases" / "1.0.0", nas_root=tmp_path / "nas")
+    client = _client(
+        install_root=install_root / "releases" / "1.0.0", nas_root=tmp_path / "nas"
+    )
 
     with pytest.raises(UpdateError) as error:
         client.prewarm_updater()
@@ -332,8 +506,12 @@ def test_desktop_client_prewarm_reports_release_dir_hint_when_updater_missing(tm
 def test_desktop_client_reads_status_and_result(tmp_path: Path) -> None:
     """验证桌面客户端读取运行态状态和结果。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
-    (install_root / "update-status.json").write_text(json.dumps({"phase": "success"}), encoding="utf-8")
-    (install_root / "update-result.json").write_text(json.dumps({"success": True}), encoding="utf-8")
+    (install_root / "update-status.json").write_text(
+        json.dumps({"phase": "success"}), encoding="utf-8"
+    )
+    (install_root / "update-result.json").write_text(
+        json.dumps({"success": True}), encoding="utf-8"
+    )
     client = _client(install_root=install_root, nas_root=tmp_path / "nas")
 
     assert client.read_status()["payload"]["phase"] == "success"
@@ -364,12 +542,16 @@ def _client(
             signature_key=signature_key,
             wait_timeout=wait_timeout,
         ),
-        settings=UpdateToolSettings(nas_root=nas_root, updater_executable_name="MyToolUpdater.exe"),
+        settings=UpdateToolSettings(
+            nas_root=nas_root, updater_executable_name="MyToolUpdater.exe"
+        ),
         popen=popen,
     )
 
 
-def _write_install_root(tmp_path: Path, *, version: str, entry_name: str = "MyTool.exe") -> Path:
+def _write_install_root(
+    tmp_path: Path, *, version: str, entry_name: str = "MyTool.exe"
+) -> Path:
     """写入测试安装根。
 
     :param tmp_path: pytest 临时目录。
@@ -388,7 +570,11 @@ def _write_install_root(tmp_path: Path, *, version: str, entry_name: str = "MyTo
                 "version": version,
                 "release_dir": f"releases/{version}",
                 "executable": entry_name,
-                "entry": {"kind": "executable", "path": entry_name, "platform": "windows"},
+                "entry": {
+                    "kind": "executable",
+                    "path": entry_name,
+                    "platform": "windows",
+                },
             }
         ),
         encoding="utf-8",
@@ -396,7 +582,13 @@ def _write_install_root(tmp_path: Path, *, version: str, entry_name: str = "MyTo
     return install_root
 
 
-def _write_manifest(root: Path, *, version: str, content: bytes = b"release", sign_key: Path | None = None) -> None:
+def _write_manifest(
+    root: Path,
+    *,
+    version: str,
+    content: bytes = b"release",
+    sign_key: Path | None = None,
+) -> None:
     """写入测试 NAS manifest 和包。
 
     :param root: 测试 NAS 根目录。
@@ -427,7 +619,9 @@ def _write_manifest(root: Path, *, version: str, content: bytes = b"release", si
         },
     }
     if sign_key is not None:
-        payload = sign_manifest_payload(payload, key=load_hmac_key(sign_key), key_id="release")
+        payload = sign_manifest_payload(
+            payload, key=load_hmac_key(sign_key), key_id="release"
+        )
     (channel_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
     (version_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
 
@@ -457,6 +651,40 @@ def _popen_recorder(calls: list[list[str]]):
         return Process()
 
     return popen
+
+
+def _popen_immediate_failure(*args: object, **kwargs: object):  # noqa: ANN202
+    """返回启动后立即以非零状态退出的 updater 进程。"""
+    del args, kwargs
+
+    class Process:
+        """模拟缺失运行库的 updater。"""
+
+        pid = 999
+
+        def wait(self, timeout: float | None = None) -> int:
+            """返回启动失败状态。"""
+            assert timeout is not None
+            return 255
+
+    return Process()
+
+
+def _popen_immediate_success(*args: object, **kwargs: object):  # noqa: ANN202
+    """返回启动后立即以零状态退出的 updater 进程。"""
+    del args, kwargs
+
+    class Process:
+        """模拟错误吞掉命令但返回零的 updater。"""
+
+        pid = 1000
+
+        def wait(self, timeout: float | None = None) -> int:
+            """返回伪成功状态。"""
+            assert timeout is not None
+            return 0
+
+    return Process()
 
 
 def _popen_wait_recorder(calls: list[tuple[list[str], dict[str, object]]]):

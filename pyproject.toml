@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "update-online-tool"
-version = "0.2.5"
+version = "0.2.6"
 description = "NAS-based online update SDK and CLI for desktop applications"
 requires-python = ">=3.11"
 readme = "README.md"

@@ -237,7 +237,19 @@ python -m PyInstaller --noconfirm build\updater\<updater_name>.spec
 uot assemble-pyinstaller --version <target_version> --product-name <product_name> --settings <settings_file> --updater-bundle dist\<updater_name> --force
 ```
 
-`--updater-bundle` 可以指向 onefile 文件或 onedir 目录；装配后会复制到安装根 `updater/` 和升级目录 `updater/`。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater/`；接入方脚本不应再手工复制根目录 updater 或 `_launcher/updater`。升级 zip 不应预置远端 `latest.json` 或运行态 `pending-update.json`、`update-result.json`、`update-status.json`。
+`--updater-bundle` 可以指向 onefile 文件或 onedir 目录；装配后会复制到安装根 `updater/` 和升级目录 `updater/`。只有能够脱离相邻 `_internal` 独立执行的文件才是 onefile；`EXE(..., exclude_binaries=True)` 生成的是 onedir bootloader，必须传完整目录。完整安装包与升级 zip 都应携带 UOT 生成的标准 `updater/`；接入方脚本不应再手工复制根目录 updater 或 `_launcher/updater`。升级 zip 不应预置远端 `latest.json` 或运行态 `pending-update.json`、`update-result.json`、`update-status.json`。
+
+同平台发布前必须对最终安装根运行 Skill 检查器并启用真实 smoke：
+
+```bash
+python skills/uot-nas-online-update/scripts/check_uot_artifacts.py \
+  --install-dir <install-root> --version <target-version> \
+  --platform <platform> --entry-path <entry-path> --mode legacy \
+  --legacy-root-entry <stable-entry> \
+  --updater-relative updater/<updater-name> --smoke-updater
+```
+
+检查器必须实际执行 updater `--help` 且退出码为 0；文件存在、签名有效或 ZIP 完整均不能替代该门禁。
 
 ```powershell
 uot-updater install --install-root <install_root> --package <package_path-from-prepare-version> --manifest <manifest_path-from-prepare-version> --signature-key config\uot-signing.pub --wait-pid <old_gui_pid> --wait-timeout 60 --restart
