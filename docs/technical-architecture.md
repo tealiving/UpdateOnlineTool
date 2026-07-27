@@ -55,6 +55,8 @@ UOT 拥有：
 | `settings.py` | 解析 `config/settings.json`、用户级 settings、`nas.root` 和 `nas.roots`，规范化 UNC 和 `file://` 路径。 |
 | `nas.py` | 生成 NAS 上 `latest.json`、`versions.json`、版本目录和包路径；拒绝 manifest 中的 UNC、盘符、反斜杠和绝对路径。 |
 | `manifest.py` | 定义 manifest schema、包信息、策略字段和签名字段。 |
+| `release_identity.py` | 定义 app、channel、platform、version 和受控相对路径的跨平台词法合同。 |
+| `release_package.py` | 生成不可变 ZIP 计划，统一处理路径预算、可移植名称冲突、symlink 校验和安全解压。 |
 | `signature.py` | 生成 HMAC/Ed25519 密钥，签名和验签 manifest。 |
 | `service.py` | 低层 SDK，负责检查更新、列出远端版本、读取指定版本 manifest、准备包。 |
 | `desktop.py` | 面向桌面 GUI 的高层 facade，统一检查、列表、安装、切换、回滚、updater 预热和状态读取。 |
@@ -246,7 +248,15 @@ flowchart TD
 | NAS 不可访问 | 返回 `NAS_SOURCE_UNAVAILABLE`，GUI 展示错误或静默跳过更新。 |
 | manifest 被篡改 | `--signature-key` 或 `DesktopUpdateConfig.signature_key` 会触发验签失败。 |
 | 包大小/hash 不匹配 | 复制或安装前失败，不切换 `current.json`。 |
-| ZIP 路径穿越 | runtime 拒绝解压。 |
+| hash 校验后包被替换 | 同一打开文件在计划、解压前后复验，返回 hash/size mismatch。 |
+| ZIP 路径穿越或 symlink 逃逸 | `ReleasePackagePlan` 在创建 staging 前拒绝。 |
+| Windows 保留名、尾随点/空格、ADS | 返回 `PACKAGE_LAYOUT_INVALID`。 |
+| 大小写或 NFC/NFD 等价冲突 | 以 `NFC + casefold` 冲突键拒绝静默覆盖。 |
+| 组件或目标路径过长 | 返回 `PACKAGE_PATH_TOO_LONG`，不创建 release。 |
+| 空 ZIP、ZIP bomb 或成员过多 | 在创建 staging 前按资源预算拒绝。 |
+| 合法中文名称 | NFC 规范化后保留，并由三平台矩阵验证。 |
+| 历史 release 缺少合同 | 允许切换/回滚，但仍校验版本目录、入口类型和根目录边界。 |
+| 重复发布中途失败 | 恢复 package、manifest、latest 和 versions index 的旧快照。 |
 | 旧进程未退出 | 返回 `PROCESS_TIMEOUT`，提示用户关闭应用后重试。 |
 | 并发安装/切换 | `update.lock` 返回 `UPDATE_LOCKED`。 |
 | sidecar 提升后切换失败 | 回滚旧 launcher/updater。 |

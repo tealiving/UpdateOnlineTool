@@ -9,7 +9,7 @@ import os
 import shutil
 import sys
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,9 +18,12 @@ from uuid import uuid4
 from update_online_tool.diagnostics import collect_diagnostics, write_diagnostic_archive
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.install_root import normalize_install_root
-from update_online_tool.installed import list_installed_versions, migrate_install_root, switch_installed_version
+from update_online_tool.installed import list_installed_versions, migrate_install_root
 from update_online_tool.manifest import UpdateManifest
-from update_online_tool.migration_package import verify_migration_package, write_migration_package_template
+from update_online_tool.migration_package import (
+    verify_migration_package,
+    write_migration_package_template,
+)
 from update_online_tool.nas import NasReleaseSource
 from update_online_tool.pyinstaller_assembly import (
     assemble_pyinstaller_release,
@@ -30,13 +33,23 @@ from update_online_tool.pyinstaller_assembly import (
     write_bridge_pyinstaller_spec,
     write_updater_pyinstaller_spec,
 )
-from update_online_tool.release_assembly import ReleaseAssemblyConfig, assemble_release_layout, create_release_package
+from update_online_tool.release_assembly import (
+    ReleaseAssemblyConfig,
+    assemble_release_layout,
+    create_release_package,
+)
 from update_online_tool.release_contract import (
     RELEASE_CONTRACT_FILENAME,
     ReleaseArtifactContract,
     validate_release_artifact,
     write_release_contract,
 )
+from update_online_tool.release_identity import (
+    normalize_release_version,
+    validate_release_component,
+    validate_release_platform,
+)
+from update_online_tool.release_package import ReleasePackagePlan
 from update_online_tool.runtime import (
     apply_pending_update,
     install_prepared_package,
@@ -45,7 +58,11 @@ from update_online_tool.runtime import (
     switch_installed_release,
 )
 from update_online_tool.service import UpdateService
-from update_online_tool.settings import UpdateToolSettings, normalize_nas_root, user_settings_path
+from update_online_tool.settings import (
+    UpdateToolSettings,
+    normalize_nas_root,
+    user_settings_path,
+)
 from update_online_tool.signature import (
     derive_ed25519_public_key_pem,
     generate_ed25519_private_key_pem,
@@ -135,217 +152,716 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     keygen = subparsers.add_parser("keygen", help="Generate a manifest signing key.")
-    keygen.add_argument("--output", required=True, type=Path, help="Signing key output path.")
+    keygen.add_argument(
+        "--output", required=True, type=Path, help="Signing key output path."
+    )
     keygen.add_argument(
         "--algorithm",
         default="ed25519",
         choices=["ed25519", "hmac-sha256"],
         help="Signing algorithm. Defaults to Ed25519.",
     )
-    keygen.add_argument("--public-output", default=None, type=Path, help="Public key output path for Ed25519.")
-    keygen.add_argument("--force", action="store_true", help="Overwrite existing key file.")
+    keygen.add_argument(
+        "--public-output",
+        default=None,
+        type=Path,
+        help="Public key output path for Ed25519.",
+    )
+    keygen.add_argument(
+        "--force", action="store_true", help="Overwrite existing key file."
+    )
 
-    init = subparsers.add_parser("init", help="Generate a project update-endpoint.json.")
-    init.add_argument("--app", default="", help="Application id. Defaults to current directory name.")
+    init = subparsers.add_parser(
+        "init", help="Generate a project update-endpoint.json."
+    )
+    init.add_argument(
+        "--app", default="", help="Application id. Defaults to current directory name."
+    )
     init.add_argument("--channel", default="stable", help="Release channel.")
-    init.add_argument("--output", default="update-endpoint.json", type=Path, help="Output endpoint JSON path.")
-    init.add_argument("--source-name", default="local-nas", help="Manifest source name.")
+    init.add_argument(
+        "--output",
+        default="update-endpoint.json",
+        type=Path,
+        help="Output endpoint JSON path.",
+    )
+    init.add_argument(
+        "--source-name", default="local-nas", help="Manifest source name."
+    )
     init.add_argument("--installer-mode", default="uot_updater", help="Installer mode.")
-    init.add_argument("--package-url-prefix", default="uot-nas://nas", help="Package URL prefix.")
-    init.add_argument("--auth-provider", default="update_online_tool", help="Auth provider.")
-    init.add_argument("--priority", default=10, type=int, help="Manifest source priority.")
-    init.add_argument("--nas-root", default=None, help="Optional NAS root. Writes project settings when set.")
-    init.add_argument("--settings-output", default=None, type=Path, help="Optional settings output path.")
-    init.add_argument("--user-settings", action="store_true", help="Write settings to the OS user config directory.")
-    init.add_argument("--updater-name", default="Updater.exe", help="Standalone updater executable name.")
-    init.add_argument("--skip-nas-check", action="store_true", help="Skip NAS read/write validation during init.")
-    init.add_argument("--force", action="store_true", help="Overwrite existing output file.")
+    init.add_argument(
+        "--package-url-prefix", default="uot-nas://nas", help="Package URL prefix."
+    )
+    init.add_argument(
+        "--auth-provider", default="update_online_tool", help="Auth provider."
+    )
+    init.add_argument(
+        "--priority", default=10, type=int, help="Manifest source priority."
+    )
+    init.add_argument(
+        "--nas-root",
+        default=None,
+        help="Optional NAS root. Writes project settings when set.",
+    )
+    init.add_argument(
+        "--settings-output",
+        default=None,
+        type=Path,
+        help="Optional settings output path.",
+    )
+    init.add_argument(
+        "--user-settings",
+        action="store_true",
+        help="Write settings to the OS user config directory.",
+    )
+    init.add_argument(
+        "--updater-name",
+        default="Updater.exe",
+        help="Standalone updater executable name.",
+    )
+    init.add_argument(
+        "--skip-nas-check",
+        action="store_true",
+        help="Skip NAS read/write validation during init.",
+    )
+    init.add_argument(
+        "--force", action="store_true", help="Overwrite existing output file."
+    )
 
-    publish = subparsers.add_parser("publish", help="Publish a zip package to the NAS release root.")
+    publish = subparsers.add_parser(
+        "publish", help="Publish a zip package to the NAS release root."
+    )
     _add_settings_arg(publish)
     publish.add_argument("--app", required=True, help="Application id.")
     publish.add_argument("--version", required=True, help="Release version.")
-    publish.add_argument("--package", required=True, type=Path, help="Release zip path.")
-    publish.add_argument("--release-contract", default=None, type=Path, help="Optional validated uot-release.json path.")
-    publish.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
-    publish.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+    publish.add_argument(
+        "--package", required=True, type=Path, help="Release zip path."
+    )
+    publish.add_argument(
+        "--release-contract",
+        default=None,
+        type=Path,
+        help="Optional validated uot-release.json path.",
+    )
+    publish.add_argument(
+        "--channel", default="", help="Release channel. Defaults to settings."
+    )
+    publish.add_argument(
+        "--platform",
+        default="",
+        help="Optional target platform: windows, macos, or linux.",
+    )
     publish.add_argument("--notes", default="", help="Release notes.")
-    publish.add_argument("--notes-file", default=None, type=Path, help="Read release notes from a text file.")
-    publish.add_argument("--min-supported-version", default="", help="Minimum supported current version.")
-    publish.add_argument("--mandatory", action="store_true", help="Mark this update as mandatory.")
-    publish.add_argument("--published-at", default="", help="ISO timestamp. Defaults to current UTC time.")
-    publish.add_argument("--allow-downgrade", action="store_true", help="Allow switching down to this version.")
-    publish.add_argument("--hidden", action="store_true", help="Hide this version from normal version lists.")
-    publish.add_argument("--requires-confirmation", action="store_true", help="Require user confirmation before install.")
-    publish.add_argument("--rollout-percent", default=100, type=int, help="Rollout percentage from 0 to 100.")
-    publish.add_argument("--data-schema-version", default=0, type=int, help="Application data schema version.")
-    publish.add_argument("--sign-key", default=None, type=Path, help="Signing key file used to sign latest.json.")
-    publish.add_argument("--key-id", default="default", help="Signature key id written to latest.json.")
+    publish.add_argument(
+        "--notes-file",
+        default=None,
+        type=Path,
+        help="Read release notes from a text file.",
+    )
+    publish.add_argument(
+        "--min-supported-version", default="", help="Minimum supported current version."
+    )
+    publish.add_argument(
+        "--mandatory", action="store_true", help="Mark this update as mandatory."
+    )
+    publish.add_argument(
+        "--published-at",
+        default="",
+        help="ISO timestamp. Defaults to current UTC time.",
+    )
+    publish.add_argument(
+        "--allow-downgrade",
+        action="store_true",
+        help="Allow switching down to this version.",
+    )
+    publish.add_argument(
+        "--hidden",
+        action="store_true",
+        help="Hide this version from normal version lists.",
+    )
+    publish.add_argument(
+        "--requires-confirmation",
+        action="store_true",
+        help="Require user confirmation before install.",
+    )
+    publish.add_argument(
+        "--rollout-percent",
+        default=100,
+        type=int,
+        help="Rollout percentage from 0 to 100.",
+    )
+    publish.add_argument(
+        "--data-schema-version",
+        default=0,
+        type=int,
+        help="Application data schema version.",
+    )
+    publish.add_argument(
+        "--sign-key",
+        default=None,
+        type=Path,
+        help="Signing key file used to sign latest.json.",
+    )
+    publish.add_argument(
+        "--key-id", default="default", help="Signature key id written to latest.json."
+    )
 
-    verify = subparsers.add_parser("verify", help="Verify one app manifest and package.")
+    verify = subparsers.add_parser(
+        "verify", help="Verify one app manifest and package."
+    )
     _add_settings_arg(verify)
     verify.add_argument("--app", required=True, help="Application id.")
-    verify.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
-    verify.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
-    verify.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
+    verify.add_argument(
+        "--channel", default="", help="Release channel. Defaults to settings."
+    )
+    verify.add_argument(
+        "--platform",
+        default="",
+        help="Optional target platform: windows, macos, or linux.",
+    )
+    verify.add_argument(
+        "--signature-key",
+        default=None,
+        type=Path,
+        help="Key file used to verify manifest signature.",
+    )
 
-    check = subparsers.add_parser("check", help="Check whether an app version has an update.")
+    check = subparsers.add_parser(
+        "check", help="Check whether an app version has an update."
+    )
     _add_settings_arg(check)
     check.add_argument("--app", required=True, help="Application id.")
     check.add_argument("--current-version", required=True, help="Current app version.")
-    check.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
-    check.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
+    check.add_argument(
+        "--channel", default="", help="Release channel. Defaults to settings."
+    )
+    check.add_argument(
+        "--platform",
+        default="",
+        help="Optional target platform: windows, macos, or linux.",
+    )
     check.add_argument("--skipped-version", default="", help="Skipped version.")
-    check.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
+    check.add_argument(
+        "--signature-key",
+        default=None,
+        type=Path,
+        help="Key file used to verify manifest signature.",
+    )
 
-    list_remote = subparsers.add_parser("list-remote", help="List published versions on the NAS release root.")
+    list_remote = subparsers.add_parser(
+        "list-remote", help="List published versions on the NAS release root."
+    )
     _add_settings_arg(list_remote)
     list_remote.add_argument("--app", required=True, help="Application id.")
-    list_remote.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
-    list_remote.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
-    list_remote.add_argument("--include-hidden", action="store_true", help="Include hidden versions.")
-    list_remote.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signatures.")
+    list_remote.add_argument(
+        "--channel", default="", help="Release channel. Defaults to settings."
+    )
+    list_remote.add_argument(
+        "--platform",
+        default="",
+        help="Optional target platform: windows, macos, or linux.",
+    )
+    list_remote.add_argument(
+        "--include-hidden", action="store_true", help="Include hidden versions."
+    )
+    list_remote.add_argument(
+        "--signature-key",
+        default=None,
+        type=Path,
+        help="Key file used to verify manifest signatures.",
+    )
 
-    show_version = subparsers.add_parser("show-version", help="Print one published version manifest.")
+    show_version = subparsers.add_parser(
+        "show-version", help="Print one published version manifest."
+    )
     _add_settings_arg(show_version)
     show_version.add_argument("--app", required=True, help="Application id.")
     show_version.add_argument("--version", required=True, help="Release version.")
-    show_version.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
-    show_version.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
-    show_version.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
+    show_version.add_argument(
+        "--channel", default="", help="Release channel. Defaults to settings."
+    )
+    show_version.add_argument(
+        "--platform",
+        default="",
+        help="Optional target platform: windows, macos, or linux.",
+    )
+    show_version.add_argument(
+        "--signature-key",
+        default=None,
+        type=Path,
+        help="Key file used to verify manifest signature.",
+    )
 
-    prepare_version = subparsers.add_parser("prepare-version", help="Copy and verify one published version package.")
+    prepare_version = subparsers.add_parser(
+        "prepare-version", help="Copy and verify one published version package."
+    )
     _add_settings_arg(prepare_version)
     prepare_version.add_argument("--app", required=True, help="Application id.")
     prepare_version.add_argument("--version", required=True, help="Release version.")
-    prepare_version.add_argument("--download-dir", required=True, type=Path, help="Local package download directory.")
-    prepare_version.add_argument("--channel", default="", help="Release channel. Defaults to settings.")
-    prepare_version.add_argument("--platform", default="", help="Optional target platform: windows, macos, or linux.")
-    prepare_version.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
+    prepare_version.add_argument(
+        "--download-dir",
+        required=True,
+        type=Path,
+        help="Local package download directory.",
+    )
+    prepare_version.add_argument(
+        "--channel", default="", help="Release channel. Defaults to settings."
+    )
+    prepare_version.add_argument(
+        "--platform",
+        default="",
+        help="Optional target platform: windows, macos, or linux.",
+    )
+    prepare_version.add_argument(
+        "--signature-key",
+        default=None,
+        type=Path,
+        help="Key file used to verify manifest signature.",
+    )
 
-    list_installed = subparsers.add_parser("list-installed", help="List releases under an assembled install root.")
-    list_installed.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
-    list_installed.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
+    list_installed = subparsers.add_parser(
+        "list-installed", help="List releases under an assembled install root."
+    )
+    list_installed.add_argument(
+        "--install-root", required=True, type=Path, help="Assembled install root."
+    )
+    list_installed.add_argument(
+        "--entry-name",
+        default="",
+        help="Release entry name. Defaults to current.json entry.",
+    )
 
-    switch_installed = subparsers.add_parser("switch-installed", help="Switch current.json to an installed release.")
-    switch_installed.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
-    switch_installed.add_argument("--version", required=True, help="Installed release version.")
-    switch_installed.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
-    switch_installed.add_argument("--app", default="", help="Application id. Defaults to current.json app_id.")
-    switch_installed.add_argument("--platform", default="", help="Platform. Defaults to current.json entry.platform.")
-    switch_installed.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before switch.")
-    switch_installed.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
-    switch_installed.add_argument("--restart", action="store_true", help="Restart the current release after switch.")
+    switch_installed = subparsers.add_parser(
+        "switch-installed", help="Switch current.json to an installed release."
+    )
+    switch_installed.add_argument(
+        "--install-root", required=True, type=Path, help="Assembled install root."
+    )
+    switch_installed.add_argument(
+        "--version", required=True, help="Installed release version."
+    )
+    switch_installed.add_argument(
+        "--entry-name",
+        default="",
+        help="Release entry name. Defaults to current.json entry.",
+    )
+    switch_installed.add_argument(
+        "--app", default="", help="Application id. Defaults to current.json app_id."
+    )
+    switch_installed.add_argument(
+        "--platform",
+        default="",
+        help="Platform. Defaults to current.json entry.platform.",
+    )
+    switch_installed.add_argument(
+        "--wait-pid",
+        default=None,
+        type=int,
+        help="Old application PID to wait for before switch.",
+    )
+    switch_installed.add_argument(
+        "--wait-timeout",
+        default=60.0,
+        type=float,
+        help="Seconds to wait for --wait-pid.",
+    )
+    switch_installed.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart the current release after switch.",
+    )
 
-    migrate_install = subparsers.add_parser("migrate-install-root", help="Migrate a flat install root to releases/current.json.")
-    migrate_install.add_argument("--install-root", required=True, type=Path, help="Legacy install root.")
-    migrate_install.add_argument("--version", required=True, help="Version to assign to the migrated release.")
-    migrate_install.add_argument("--entry-name", required=True, help="Existing legacy entry name in the install root.")
+    migrate_install = subparsers.add_parser(
+        "migrate-install-root",
+        help="Migrate a flat install root to releases/current.json.",
+    )
+    migrate_install.add_argument(
+        "--install-root", required=True, type=Path, help="Legacy install root."
+    )
+    migrate_install.add_argument(
+        "--version", required=True, help="Version to assign to the migrated release."
+    )
+    migrate_install.add_argument(
+        "--entry-name",
+        required=True,
+        help="Existing legacy entry name in the install root.",
+    )
     migrate_install.add_argument("--app", required=True, help="Application id.")
-    migrate_install.add_argument("--platform", default="", help="Optional platform: windows, macos, or linux.")
-    migrate_install.add_argument("--force", action="store_true", help="Replace an existing target release directory.")
-    migrate_install.add_argument("--dry-run", action="store_true", help="Show migration plan without writing files.")
+    migrate_install.add_argument(
+        "--platform", default="", help="Optional platform: windows, macos, or linux."
+    )
+    migrate_install.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing target release directory.",
+    )
+    migrate_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show migration plan without writing files.",
+    )
 
     migration_package = subparsers.add_parser(
         "write-migration-package",
         help="Write a legacy-client migration package template.",
     )
-    migration_package.add_argument("--output-dir", required=True, type=Path, help="Migration package output directory.")
+    migration_package.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Migration package output directory.",
+    )
     migration_package.add_argument("--app", required=True, help="Application id.")
-    migration_package.add_argument("--version", required=True, help="Version assigned to the legacy install root.")
-    migration_package.add_argument("--entry-name", required=True, help="Legacy install-root entry name.")
-    migration_package.add_argument("--platform", default="", help="Optional platform: windows, macos, or linux.")
-    migration_package.add_argument("--updater-bundle", default=None, type=Path, help="Built updater artifact to include.")
-    migration_package.add_argument("--settings", default=None, type=Path, help="settings.json to include.")
-    migration_package.add_argument("--endpoint", default=None, type=Path, help="update-endpoint.json to include.")
-    migration_package.add_argument("--force", action="store_true", help="Overwrite existing output directory.")
+    migration_package.add_argument(
+        "--version", required=True, help="Version assigned to the legacy install root."
+    )
+    migration_package.add_argument(
+        "--entry-name", required=True, help="Legacy install-root entry name."
+    )
+    migration_package.add_argument(
+        "--platform", default="", help="Optional platform: windows, macos, or linux."
+    )
+    migration_package.add_argument(
+        "--updater-bundle",
+        default=None,
+        type=Path,
+        help="Built updater artifact to include.",
+    )
+    migration_package.add_argument(
+        "--settings", default=None, type=Path, help="settings.json to include."
+    )
+    migration_package.add_argument(
+        "--endpoint", default=None, type=Path, help="update-endpoint.json to include."
+    )
+    migration_package.add_argument(
+        "--force", action="store_true", help="Overwrite existing output directory."
+    )
 
-    verify_migration = subparsers.add_parser("verify-migration-package", help="Verify a migration package template.")
-    verify_migration.add_argument("--package-dir", required=True, type=Path, help="Migration package directory.")
+    verify_migration = subparsers.add_parser(
+        "verify-migration-package", help="Verify a migration package template."
+    )
+    verify_migration.add_argument(
+        "--package-dir", required=True, type=Path, help="Migration package directory."
+    )
 
-    install_prepared = subparsers.add_parser("install-prepared", help="Install a verified package into releases.")
-    install_prepared.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
-    install_prepared.add_argument("--package", required=True, type=Path, help="Prepared local package zip.")
-    install_prepared.add_argument("--manifest", required=True, type=Path, help="Manifest JSON for the package.")
-    install_prepared.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
-    install_prepared.add_argument("--no-switch", action="store_true", help="Install release without switching current.json.")
-    install_prepared.add_argument("--force", action="store_true", help="Replace an existing release directory.")
-    install_prepared.add_argument("--dry-run", action="store_true", help="Validate the install plan without writing files.")
-    install_prepared.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
-    install_prepared.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before install.")
-    install_prepared.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
-    install_prepared.add_argument("--restart", action="store_true", help="Restart the current release after install.")
+    install_prepared = subparsers.add_parser(
+        "install-prepared", help="Install a verified package into releases."
+    )
+    install_prepared.add_argument(
+        "--install-root", required=True, type=Path, help="Assembled install root."
+    )
+    install_prepared.add_argument(
+        "--package", required=True, type=Path, help="Prepared local package zip."
+    )
+    install_prepared.add_argument(
+        "--manifest", required=True, type=Path, help="Manifest JSON for the package."
+    )
+    install_prepared.add_argument(
+        "--entry-name",
+        default="",
+        help="Release entry name. Defaults to current.json entry.",
+    )
+    install_prepared.add_argument(
+        "--no-switch",
+        action="store_true",
+        help="Install release without switching current.json.",
+    )
+    install_prepared.add_argument(
+        "--force", action="store_true", help="Replace an existing release directory."
+    )
+    install_prepared.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the install plan without writing files.",
+    )
+    install_prepared.add_argument(
+        "--signature-key",
+        default=None,
+        type=Path,
+        help="Key file used to verify manifest signature.",
+    )
+    install_prepared.add_argument(
+        "--wait-pid",
+        default=None,
+        type=int,
+        help="Old application PID to wait for before install.",
+    )
+    install_prepared.add_argument(
+        "--wait-timeout",
+        default=60.0,
+        type=float,
+        help="Seconds to wait for --wait-pid.",
+    )
+    install_prepared.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart the current release after install.",
+    )
 
-    apply_update = subparsers.add_parser("apply-update", help="Apply pending-update.json through the standard runtime.")
-    apply_update.add_argument("--pending", required=True, type=Path, help="pending-update.json path.")
-    apply_update.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
-    apply_update.add_argument("--force", action="store_true", help="Replace an existing release directory.")
-    apply_update.add_argument("--dry-run", action="store_true", help="Validate the pending update without writing files.")
-    apply_update.add_argument("--signature-key", default=None, type=Path, help="Key file used to verify manifest signature.")
-    apply_update.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before install.")
-    apply_update.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
-    apply_update.add_argument("--restart", action="store_true", help="Restart the current release after install.")
+    apply_update = subparsers.add_parser(
+        "apply-update", help="Apply pending-update.json through the standard runtime."
+    )
+    apply_update.add_argument(
+        "--pending", required=True, type=Path, help="pending-update.json path."
+    )
+    apply_update.add_argument(
+        "--entry-name",
+        default="",
+        help="Release entry name. Defaults to current.json entry.",
+    )
+    apply_update.add_argument(
+        "--force", action="store_true", help="Replace an existing release directory."
+    )
+    apply_update.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the pending update without writing files.",
+    )
+    apply_update.add_argument(
+        "--signature-key",
+        default=None,
+        type=Path,
+        help="Key file used to verify manifest signature.",
+    )
+    apply_update.add_argument(
+        "--wait-pid",
+        default=None,
+        type=int,
+        help="Old application PID to wait for before install.",
+    )
+    apply_update.add_argument(
+        "--wait-timeout",
+        default=60.0,
+        type=float,
+        help="Seconds to wait for --wait-pid.",
+    )
+    apply_update.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart the current release after install.",
+    )
 
-    rollback = subparsers.add_parser("rollback", help="Rollback current.json to previous_version.")
-    rollback.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
-    rollback.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
-    rollback.add_argument("--wait-pid", default=None, type=int, help="Old application PID to wait for before rollback.")
-    rollback.add_argument("--wait-timeout", default=60.0, type=float, help="Seconds to wait for --wait-pid.")
-    rollback.add_argument("--restart", action="store_true", help="Restart the current release after rollback.")
+    rollback = subparsers.add_parser(
+        "rollback", help="Rollback current.json to previous_version."
+    )
+    rollback.add_argument(
+        "--install-root", required=True, type=Path, help="Assembled install root."
+    )
+    rollback.add_argument(
+        "--entry-name",
+        default="",
+        help="Release entry name. Defaults to current.json entry.",
+    )
+    rollback.add_argument(
+        "--wait-pid",
+        default=None,
+        type=int,
+        help="Old application PID to wait for before rollback.",
+    )
+    rollback.add_argument(
+        "--wait-timeout",
+        default=60.0,
+        type=float,
+        help="Seconds to wait for --wait-pid.",
+    )
+    rollback.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart the current release after rollback.",
+    )
 
-    launch_current_parser = subparsers.add_parser("launch-current", help="Launch the current release entry.")
-    launch_current_parser.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
+    launch_current_parser = subparsers.add_parser(
+        "launch-current", help="Launch the current release entry."
+    )
+    launch_current_parser.add_argument(
+        "--install-root", required=True, type=Path, help="Assembled install root."
+    )
 
-    doctor = subparsers.add_parser("doctor", help="Collect an install-root diagnostic report.")
-    doctor.add_argument("--install-root", required=True, type=Path, help="Assembled install root.")
-    doctor.add_argument("--entry-name", default="", help="Release entry name. Defaults to current.json entry.")
-    doctor.add_argument("--output", default=None, type=Path, help="Optional JSON report output path.")
-    doctor.add_argument("--archive", default=None, type=Path, help="Optional diagnostic zip output path.")
+    doctor = subparsers.add_parser(
+        "doctor", help="Collect an install-root diagnostic report."
+    )
+    doctor.add_argument(
+        "--install-root", required=True, type=Path, help="Assembled install root."
+    )
+    doctor.add_argument(
+        "--entry-name",
+        default="",
+        help="Release entry name. Defaults to current.json entry.",
+    )
+    doctor.add_argument(
+        "--output", default=None, type=Path, help="Optional JSON report output path."
+    )
+    doctor.add_argument(
+        "--archive",
+        default=None,
+        type=Path,
+        help="Optional diagnostic zip output path.",
+    )
 
-    updater_spec = subparsers.add_parser("write-updater-spec", help="Write a PyInstaller spec for uot-updater.")
-    updater_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
-    updater_spec.add_argument("--name", default="uot-updater", help="PyInstaller executable name.")
-    updater_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
-    updater_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
-    updater_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
+    updater_spec = subparsers.add_parser(
+        "write-updater-spec", help="Write a PyInstaller spec for uot-updater."
+    )
+    updater_spec.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory for generated spec files.",
+    )
+    updater_spec.add_argument(
+        "--name", default="uot-updater", help="PyInstaller executable name."
+    )
+    updater_spec.add_argument(
+        "--onefile",
+        action="store_true",
+        help="Generate a onefile spec instead of onedir.",
+    )
+    updater_spec.add_argument(
+        "--windowed", action="store_true", help="Build without a console window."
+    )
+    updater_spec.add_argument(
+        "--force", action="store_true", help="Overwrite existing generated files."
+    )
 
-    agent_spec = subparsers.add_parser("write-agent-spec", help="Write a PyInstaller spec for uot-agent.")
-    agent_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
-    agent_spec.add_argument("--name", default="uot-agent", help="PyInstaller executable name.")
-    agent_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
-    agent_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
-    agent_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
+    agent_spec = subparsers.add_parser(
+        "write-agent-spec", help="Write a PyInstaller spec for uot-agent."
+    )
+    agent_spec.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory for generated spec files.",
+    )
+    agent_spec.add_argument(
+        "--name", default="uot-agent", help="PyInstaller executable name."
+    )
+    agent_spec.add_argument(
+        "--onefile",
+        action="store_true",
+        help="Generate a onefile spec instead of onedir.",
+    )
+    agent_spec.add_argument(
+        "--windowed", action="store_true", help="Build without a console window."
+    )
+    agent_spec.add_argument(
+        "--force", action="store_true", help="Overwrite existing generated files."
+    )
 
-    bootstrap_spec = subparsers.add_parser("write-bootstrap-spec", help="Write a PyInstaller spec for uot-bootstrap.")
-    bootstrap_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
-    bootstrap_spec.add_argument("--name", default="uot-bootstrap", help="PyInstaller executable name.")
-    bootstrap_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
-    bootstrap_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
-    bootstrap_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
+    bootstrap_spec = subparsers.add_parser(
+        "write-bootstrap-spec", help="Write a PyInstaller spec for uot-bootstrap."
+    )
+    bootstrap_spec.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory for generated spec files.",
+    )
+    bootstrap_spec.add_argument(
+        "--name", default="uot-bootstrap", help="PyInstaller executable name."
+    )
+    bootstrap_spec.add_argument(
+        "--onefile",
+        action="store_true",
+        help="Generate a onefile spec instead of onedir.",
+    )
+    bootstrap_spec.add_argument(
+        "--windowed", action="store_true", help="Build without a console window."
+    )
+    bootstrap_spec.add_argument(
+        "--force", action="store_true", help="Overwrite existing generated files."
+    )
 
-    bridge_spec = subparsers.add_parser("write-bridge-spec", help="Write a PyInstaller spec for uot-bridge.")
-    bridge_spec.add_argument("--output-dir", required=True, type=Path, help="Directory for generated spec files.")
-    bridge_spec.add_argument("--name", default="uot-bridge", help="PyInstaller executable name.")
-    bridge_spec.add_argument("--onefile", action="store_true", help="Generate a onefile spec instead of onedir.")
-    bridge_spec.add_argument("--windowed", action="store_true", help="Build without a console window.")
-    bridge_spec.add_argument("--force", action="store_true", help="Overwrite existing generated files.")
+    bridge_spec = subparsers.add_parser(
+        "write-bridge-spec", help="Write a PyInstaller spec for uot-bridge."
+    )
+    bridge_spec.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Directory for generated spec files.",
+    )
+    bridge_spec.add_argument(
+        "--name", default="uot-bridge", help="PyInstaller executable name."
+    )
+    bridge_spec.add_argument(
+        "--onefile",
+        action="store_true",
+        help="Generate a onefile spec instead of onedir.",
+    )
+    bridge_spec.add_argument(
+        "--windowed", action="store_true", help="Build without a console window."
+    )
+    bridge_spec.add_argument(
+        "--force", action="store_true", help="Overwrite existing generated files."
+    )
 
-    assemble = subparsers.add_parser("assemble-pyinstaller", help="Assemble PyInstaller GUI and launcher bundles.")
+    assemble = subparsers.add_parser(
+        "assemble-pyinstaller", help="Assemble PyInstaller GUI and launcher bundles."
+    )
     assemble.add_argument("--version", required=True, help="Release version.")
-    assemble.add_argument("--dist-dir", default="dist", type=Path, help="PyInstaller dist directory.")
-    assemble.add_argument("--app", default="", help="Application id. Defaults to product name.")
-    assemble.add_argument("--product-name", required=True, help="Product name used for default bundle names.")
-    assemble.add_argument("--platform", default="windows", choices=["windows", "macos", "linux"], help="Target platform.")
-    assemble.add_argument("--entry-name", default="", help="Final stable entry name. Defaults to product name plus platform suffix.")
-    assemble.add_argument("--release-entry-name", default="", help="Source GUI entry name inside the release bundle.")
-    assemble.add_argument("--launcher-entry-name", default="", help="Source launcher entry name inside the launcher bundle.")
-    assemble.add_argument("--settings", default=None, type=Path, help="Project settings.json to bundle.")
-    assemble.add_argument("--updater-bundle", default=None, type=Path, help="Built uot-updater onefile or onedir artifact.")
-    assemble.add_argument("--updater-name", default="", help="Target name under install_root/updater/. Defaults to source name.")
-    assemble.add_argument("--bootstrap-agent-mode", action="store_true", help="Keep stable Bootstrap/Agent outside release update packages.")
-    assemble.add_argument("--agent-bundle", default=None, type=Path, help="Built uot-agent artifact required by --bootstrap-agent-mode.")
-    assemble.add_argument("--agent-name", default="", help="Target name under install_root/agent/. Defaults to source name.")
-    assemble.add_argument("--force", action="store_true", help="Overwrite existing output directories.")
+    assemble.add_argument(
+        "--dist-dir", default="dist", type=Path, help="PyInstaller dist directory."
+    )
+    assemble.add_argument(
+        "--app", default="", help="Application id. Defaults to product name."
+    )
+    assemble.add_argument(
+        "--product-name",
+        required=True,
+        help="Product name used for default bundle names.",
+    )
+    assemble.add_argument(
+        "--platform",
+        default="windows",
+        choices=["windows", "macos", "linux"],
+        help="Target platform.",
+    )
+    assemble.add_argument(
+        "--entry-name",
+        default="",
+        help="Final stable entry name. Defaults to product name plus platform suffix.",
+    )
+    assemble.add_argument(
+        "--release-entry-name",
+        default="",
+        help="Source GUI entry name inside the release bundle.",
+    )
+    assemble.add_argument(
+        "--launcher-entry-name",
+        default="",
+        help="Source launcher entry name inside the launcher bundle.",
+    )
+    assemble.add_argument(
+        "--settings", default=None, type=Path, help="Project settings.json to bundle."
+    )
+    assemble.add_argument(
+        "--updater-bundle",
+        default=None,
+        type=Path,
+        help="Built uot-updater onefile or onedir artifact.",
+    )
+    assemble.add_argument(
+        "--updater-name",
+        default="",
+        help="Target name under install_root/updater/. Defaults to source name.",
+    )
+    assemble.add_argument(
+        "--bootstrap-agent-mode",
+        action="store_true",
+        help="Keep stable Bootstrap/Agent outside release update packages.",
+    )
+    assemble.add_argument(
+        "--agent-bundle",
+        default=None,
+        type=Path,
+        help="Built uot-agent artifact required by --bootstrap-agent-mode.",
+    )
+    assemble.add_argument(
+        "--agent-name",
+        default="",
+        help="Target name under install_root/agent/. Defaults to source name.",
+    )
+    assemble.add_argument(
+        "--force", action="store_true", help="Overwrite existing output directories."
+    )
 
     assemble_release = subparsers.add_parser(
         "assemble-release",
@@ -353,32 +869,78 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     assemble_release.add_argument("--version", required=True, help="Release version.")
     assemble_release.add_argument("--app", required=True, help="Application id.")
-    assemble_release.add_argument("--release-dir", required=True, type=Path, help="Built Electron/Tauri/PyQt release directory.")
-    assemble_release.add_argument("--release-entry", required=True, help="Entry path inside --release-dir.")
-    assemble_release.add_argument("--bootstrap-dir", required=True, type=Path, help="Stable Bootstrap directory.")
-    assemble_release.add_argument("--bootstrap-entry", required=True, help="Entry path inside --bootstrap-dir.")
-    assemble_release.add_argument("--agent-bundle", required=True, type=Path, help="Stable uot-agent bundle.")
-    assemble_release.add_argument("--install-output", required=True, type=Path, help="Target UOT install root.")
-    assemble_release.add_argument("--update-output", required=True, type=Path, help="Target release-only update directory.")
-    assemble_release.add_argument("--platform", required=True, choices=["windows", "macos", "linux"], help="Target OS platform.")
-    assemble_release.add_argument("--entry-path", required=True, help="Normalized entry path written to current.json.")
-    assemble_release.add_argument("--agent-name", default="", help="Stable Agent target name. Defaults to source name.")
-    assemble_release.add_argument("--force", action="store_true", help="Overwrite existing output directories.")
+    assemble_release.add_argument(
+        "--release-dir",
+        required=True,
+        type=Path,
+        help="Built Electron/Tauri/PyQt release directory.",
+    )
+    assemble_release.add_argument(
+        "--release-entry", required=True, help="Entry path inside --release-dir."
+    )
+    assemble_release.add_argument(
+        "--bootstrap-dir", required=True, type=Path, help="Stable Bootstrap directory."
+    )
+    assemble_release.add_argument(
+        "--bootstrap-entry", required=True, help="Entry path inside --bootstrap-dir."
+    )
+    assemble_release.add_argument(
+        "--agent-bundle", required=True, type=Path, help="Stable uot-agent bundle."
+    )
+    assemble_release.add_argument(
+        "--install-output", required=True, type=Path, help="Target UOT install root."
+    )
+    assemble_release.add_argument(
+        "--update-output",
+        required=True,
+        type=Path,
+        help="Target release-only update directory.",
+    )
+    assemble_release.add_argument(
+        "--platform",
+        required=True,
+        choices=["windows", "macos", "linux"],
+        help="Target OS platform.",
+    )
+    assemble_release.add_argument(
+        "--entry-path",
+        required=True,
+        help="Normalized entry path written to current.json.",
+    )
+    assemble_release.add_argument(
+        "--agent-name",
+        default="",
+        help="Stable Agent target name. Defaults to source name.",
+    )
+    assemble_release.add_argument(
+        "--force", action="store_true", help="Overwrite existing output directories."
+    )
 
     package_release = subparsers.add_parser(
         "package-release",
         help="Create a Unicode-safe release zip and exclude macOS metadata.",
     )
-    package_release.add_argument("--source-dir", required=True, type=Path, help="Release-only directory to archive.")
-    package_release.add_argument("--output", required=True, type=Path, help="Output package.zip path.")
-    package_release.add_argument("--force", action="store_true", help="Overwrite an existing package.")
+    package_release.add_argument(
+        "--source-dir",
+        required=True,
+        type=Path,
+        help="Release-only directory to archive.",
+    )
+    package_release.add_argument(
+        "--output", required=True, type=Path, help="Output package.zip path."
+    )
+    package_release.add_argument(
+        "--force", action="store_true", help="Overwrite an existing package."
+    )
 
     write_contract = subparsers.add_parser(
         "write-release-contract",
         help="Write a UOT release artifact contract after framework packaging.",
     )
     _add_release_contract_args(write_contract)
-    write_contract.add_argument("--force", action="store_true", help="Overwrite an existing uot-release.json.")
+    write_contract.add_argument(
+        "--force", action="store_true", help="Overwrite an existing uot-release.json."
+    )
 
     validate_release = subparsers.add_parser(
         "validate-release",
@@ -392,16 +954,23 @@ def _keygen(args: argparse.Namespace) -> int:
     """生成 manifest 签名密钥。"""
     output = Path(args.output)
     if output.exists() and not bool(args.force):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"key output already exists: {output}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"key output already exists: {output}"
+        )
     public_output = Path(args.public_output) if args.public_output is not None else None
     if public_output is not None and public_output.exists() and not bool(args.force):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"public key output already exists: {public_output}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"public key output already exists: {public_output}",
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     if args.algorithm == "ed25519":
         output.write_text(generate_ed25519_private_key_pem(), encoding="utf-8")
         if public_output is not None:
             public_output.parent.mkdir(parents=True, exist_ok=True)
-            public_output.write_text(derive_ed25519_public_key_pem(output), encoding="utf-8")
+            public_output.write_text(
+                derive_ed25519_public_key_pem(output), encoding="utf-8"
+            )
     else:
         output.write_text(generate_hmac_key() + "\n", encoding="utf-8")
     print(f"Generated signing key: {output}")
@@ -428,10 +997,15 @@ def _init(args: argparse.Namespace) -> int:
     app_id = _resolve_init_app_id(args)
     output_path = Path(args.output)
     if output_path.exists() and not args.force:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {output_path}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {output_path}"
+        )
     settings_path = _resolve_init_settings_output(args)
     if settings_path is not None and settings_path.exists() and not args.force:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"settings output already exists: {settings_path}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"settings output already exists: {settings_path}",
+        )
     for log_line in _check_init_nas_root(args):
         print(log_line)
     channel = str(args.channel or "stable").strip()
@@ -442,8 +1016,12 @@ def _init(args: argparse.Namespace) -> int:
             {
                 "name": str(args.source_name or "local-nas").strip(),
                 "manifest_url": f"uot-nas://{app_id}/{channel}",
-                "package_url_prefix": str(args.package_url_prefix or "uot-nas://nas").strip(),
-                "auth_provider": str(args.auth_provider or "update_online_tool").strip(),
+                "package_url_prefix": str(
+                    args.package_url_prefix or "uot-nas://nas"
+                ).strip(),
+                "auth_provider": str(
+                    args.auth_provider or "update_online_tool"
+                ).strip(),
                 "priority": int(args.priority),
             }
         ],
@@ -494,23 +1072,32 @@ def _probe_nas_root(nas_root: Path) -> list[str]:
     """
     root = Path(nas_root)
     if not root.is_dir():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not available: {root}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not available: {root}"
+        )
     try:
         next(root.iterdir(), None)
     except OSError as exc:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not readable: {root}") from exc
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not readable: {root}"
+        ) from exc
     probe_path = root / f".uot-write-test-{os.getpid()}-{uuid4().hex}.tmp"
     probe_text = "update-online-tool nas check\n"
     try:
         probe_path.write_text(probe_text, encoding="utf-8")
         if probe_path.read_text(encoding="utf-8") != probe_text:
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root write probe mismatch: {root}")
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID,
+                f"NAS root write probe mismatch: {root}",
+            )
         probe_path.unlink()
     except UpdateError:
         raise
     except OSError as exc:
         _cleanup_probe_file(probe_path)
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not writable: {root}") from exc
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"NAS root is not writable: {root}"
+        ) from exc
     return [
         f"NAS check ok: root={root}",
         "NAS check ok: readable",
@@ -541,7 +1128,10 @@ def _resolve_init_app_id(args: argparse.Namespace) -> str:
     if not app_id:
         app_id = Path.cwd().name.strip()
     if not app_id:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "app id is required outside a named project directory")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "app id is required outside a named project directory",
+        )
     return app_id
 
 
@@ -552,7 +1142,10 @@ def _build_init_settings_payload(args: argparse.Namespace) -> dict[str, object]:
     :return: settings JSON 字典。
     """
     if args.nas_root is None:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "--nas-root is required when writing settings")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "--nas-root is required when writing settings",
+        )
     return {
         "nas": {
             "root": str(normalize_nas_root(args.nas_root)),
@@ -576,65 +1169,108 @@ def _publish(args: argparse.Namespace) -> int:
     """
     settings = _load_settings_arg(args)
     source = NasReleaseSource(settings.nas_root)
-    channel = args.channel or settings.default_channel
+    app_id = validate_release_component(args.app, "app_id")
+    channel = validate_release_component(
+        args.channel or settings.default_channel, "channel"
+    )
+    version = normalize_release_version(args.version)
+    package_filename = validate_release_component(
+        settings.package_filename,
+        "publish.package_filename",
+        maximum_length=255,
+    )
     platform = _normalize_optional_platform(args.platform)
-    min_supported_version = args.min_supported_version or settings.default_minimum_version
+    min_supported_version = (
+        args.min_supported_version or settings.default_minimum_version
+    )
     source_package_path = Path(args.package)
     if not source_package_path.is_file():
-        raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {source_package_path}")
+        raise UpdateError(
+            UpdateErrorCode.PACKAGE_NOT_FOUND,
+            f"package not found: {source_package_path}",
+        )
+    ReleasePackagePlan.from_zip(source_package_path, platform=platform)
     if args.release_contract is not None:
         _validate_publish_release_contract(
             Path(args.release_contract),
-            app_id=str(args.app),
-            version=str(args.version),
+            app_id=app_id,
+            version=version,
             platform=platform,
             package_path=source_package_path,
         )
     notes = _resolve_publish_notes(args)
-    target_package_path = source.package_path(args.app, args.version, settings.package_filename, platform, channel)
-    with _publish_lock(source=source, app_id=args.app, channel=channel, platform=platform):
-        _copy_file_atomic(source_package_path, target_package_path)
-        package_size = target_package_path.stat().st_size
-        package_sha256 = _sha256_of(target_package_path)
-        relative_package_url = _package_url(args.app, args.version, settings.package_filename, platform, channel)
-        published_at = args.published_at.strip() or datetime.now(timezone.utc).isoformat()
-        payload: dict[str, object] = {
-            "schema_version": 2,
-            "app_id": args.app,
-            "channel": channel,
-            "version": args.version,
-            "mandatory": bool(args.mandatory),
-            "min_supported_version": min_supported_version,
-            "published_at": published_at,
-            "notes": notes,
-            "package": {
-                "url": relative_package_url,
-                "size": package_size,
-                "sha256": package_sha256,
-            },
-        }
-        if platform:
-            payload["platform"] = platform
-        payload.update(_manifest_policy_payload(args))
-        manifest = UpdateManifest.from_payload(payload)
-        manifest_payload = manifest.to_payload()
-        if args.sign_key is not None:
-            manifest_payload = sign_manifest_payload_with_key_file(
-                manifest_payload,
-                key_path=Path(args.sign_key),
-                key_id=args.key_id,
+    target_package_path = source.package_path(
+        app_id, version, package_filename, platform, channel
+    )
+    version_manifest_path = (
+        source.version_dir(app_id, version, platform, channel) / "latest.json"
+    )
+    channel_manifest_path = source.manifest_path(app_id, channel, platform)
+    versions_index_path = source.versions_index_path(app_id, channel, platform)
+    with _publish_lock(
+        source=source, app_id=app_id, channel=channel, platform=platform
+    ):
+        with _publish_file_transaction(
+            (
+                target_package_path,
+                version_manifest_path,
+                channel_manifest_path,
+                versions_index_path,
             )
-        manifest = UpdateManifest.from_payload(manifest_payload)
-        _write_json(source.version_dir(args.app, args.version, platform, channel) / "latest.json", manifest_payload)
-        _write_json(source.manifest_path(args.app, channel, platform), manifest_payload)
-        _update_versions_index(
-            source=source,
-            app_id=args.app,
-            channel=channel,
-            platform=platform,
-            manifest=manifest,
-        )
-    print(f"Published {args.app} v{args.version} to {settings.nas_root}")
+        ):
+            _copy_file_atomic(
+                source_package_path,
+                target_package_path,
+                validator=lambda path: ReleasePackagePlan.from_zip(
+                    path,
+                    platform=platform,
+                ),
+            )
+            package_size = target_package_path.stat().st_size
+            package_sha256 = _sha256_of(target_package_path)
+            relative_package_url = _package_url(
+                app_id, version, package_filename, platform, channel
+            )
+            published_at = (
+                args.published_at.strip() or datetime.now(timezone.utc).isoformat()
+            )
+            payload: dict[str, object] = {
+                "schema_version": 2,
+                "app_id": app_id,
+                "channel": channel,
+                "version": version,
+                "mandatory": bool(args.mandatory),
+                "min_supported_version": min_supported_version,
+                "published_at": published_at,
+                "notes": notes,
+                "package": {
+                    "url": relative_package_url,
+                    "size": package_size,
+                    "sha256": package_sha256,
+                },
+            }
+            if platform:
+                payload["platform"] = platform
+            payload.update(_manifest_policy_payload(args))
+            manifest = UpdateManifest.from_payload(payload)
+            manifest_payload = manifest.to_payload()
+            if args.sign_key is not None:
+                manifest_payload = sign_manifest_payload_with_key_file(
+                    manifest_payload,
+                    key_path=Path(args.sign_key),
+                    key_id=args.key_id,
+                )
+            manifest = UpdateManifest.from_payload(manifest_payload)
+            _write_json(version_manifest_path, manifest_payload)
+            _write_json(channel_manifest_path, manifest_payload)
+            _update_versions_index(
+                source=source,
+                app_id=app_id,
+                channel=channel,
+                platform=platform,
+                manifest=manifest,
+            )
+    print(f"Published {app_id} v{version} to {settings.nas_root}")
     return 0
 
 
@@ -652,13 +1288,20 @@ def _verify(args: argparse.Namespace) -> int:
     manifest_path = source.manifest_path(args.app, channel, platform)
     manifest_payload = _load_manifest_payload(manifest_path)
     if args.signature_key is not None:
-        verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(args.signature_key))
+        verify_manifest_signature_with_key_file(
+            manifest_payload, key_path=Path(args.signature_key)
+        )
     manifest = UpdateManifest.from_payload(manifest_payload)
     if platform and manifest.platform and manifest.platform != platform:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"manifest platform mismatch: {manifest.platform}")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID,
+            f"manifest platform mismatch: {manifest.platform}",
+        )
     package_path = source.resolve_package_path(manifest.package.url)
     if not package_path.is_file():
-        raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {package_path}")
+        raise UpdateError(
+            UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {package_path}"
+        )
     actual_size = package_path.stat().st_size
     if actual_size != manifest.package.size:
         raise UpdateError(
@@ -671,6 +1314,7 @@ def _verify(args: argparse.Namespace) -> int:
             UpdateErrorCode.PACKAGE_HASH_MISMATCH,
             f"package.sha256 {manifest.package.sha256.lower()} != actual {actual_sha256}",
         )
+    ReleasePackagePlan.from_zip(package_path, platform=manifest.platform or platform)
     print(f"Verified {manifest_path}")
     return 0
 
@@ -691,7 +1335,9 @@ def _check(args: argparse.Namespace) -> int:
         platform=platform,
         skipped_version=args.skipped_version or None,
     )
-    _verify_manifest_payload_if_requested(result.manifest.to_payload(), args.signature_key)
+    _verify_manifest_payload_if_requested(
+        result.manifest.to_payload(), args.signature_key
+    )
     print(f"{result.decision.value}: {result.manifest.version}")
     return 0
 
@@ -709,7 +1355,9 @@ def _list_remote(args: argparse.Namespace) -> int:
     )
     if args.signature_key is not None:
         for item in versions:
-            _verify_manifest_payload_if_requested(item.manifest.to_payload(), args.signature_key)
+            _verify_manifest_payload_if_requested(
+                item.manifest.to_payload(), args.signature_key
+            )
     payload = {
         "app_id": args.app,
         "channel": channel,
@@ -730,8 +1378,12 @@ def _list_remote(args: argparse.Namespace) -> int:
                 "requires_confirmation": item.manifest.requires_confirmation,
                 "rollout_percent": item.manifest.rollout_percent,
                 "data_schema_version": item.manifest.data_schema_version,
-                "signature_algorithm": item.manifest.signature.algorithm if item.manifest.signature else "",
-                "signature_key_id": item.manifest.signature.key_id if item.manifest.signature else "",
+                "signature_algorithm": item.manifest.signature.algorithm
+                if item.manifest.signature
+                else "",
+                "signature_key_id": item.manifest.signature.key_id
+                if item.manifest.signature
+                else "",
                 "notes": item.notes,
             }
             for item in versions
@@ -769,10 +1421,14 @@ def _resolve_publish_notes(args: argparse.Namespace) -> str:
     if notes_file is not None:
         path = Path(notes_file)
         if not path.is_file():
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"notes file not found: {path}")
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID, f"notes file not found: {path}"
+            )
         notes = path.read_text(encoding="utf-8").strip()
         if not notes:
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"notes file is empty: {path}")
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID, f"notes file is empty: {path}"
+            )
         return notes
     notes = str(getattr(args, "notes", "") or "").strip()
     if notes:
@@ -825,7 +1481,9 @@ def _prepare_version(args: argparse.Namespace) -> int:
 def _list_installed(args: argparse.Namespace) -> int:
     """列出安装根已安装版本。"""
     install_root = normalize_install_root(Path(args.install_root))
-    versions = list_installed_versions(install_root=install_root, entry_name=args.entry_name)
+    versions = list_installed_versions(
+        install_root=install_root, entry_name=args.entry_name
+    )
     payload = {
         "install_root": str(install_root),
         "versions": [
@@ -904,7 +1562,9 @@ def _install_prepared(args: argparse.Namespace) -> int:
     """安装已准备的升级包。"""
     manifest_payload = _load_manifest_payload(Path(args.manifest))
     if args.signature_key is not None:
-        verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(args.signature_key))
+        verify_manifest_signature_with_key_file(
+            manifest_payload, key_path=Path(args.signature_key)
+        )
     manifest = UpdateManifest.from_payload(manifest_payload)
     result = install_prepared_package(
         install_root=Path(args.install_root),
@@ -926,7 +1586,9 @@ def _apply_update(args: argparse.Namespace) -> int:
     """应用 pending-update.json。"""
     result = apply_pending_update(
         pending_path=Path(args.pending),
-        signature_key=Path(args.signature_key) if args.signature_key is not None else None,
+        signature_key=Path(args.signature_key)
+        if args.signature_key is not None
+        else None,
         entry_name=args.entry_name,
         force=bool(args.force),
         dry_run=bool(args.dry_run),
@@ -960,7 +1622,9 @@ def _launch_current(args: argparse.Namespace) -> int:
 
 def _doctor(args: argparse.Namespace) -> int:
     """收集安装根诊断报告。"""
-    report = collect_diagnostics(install_root=Path(args.install_root), entry_name=args.entry_name)
+    report = collect_diagnostics(
+        install_root=Path(args.install_root), entry_name=args.entry_name
+    )
     if args.archive is not None:
         archive_path = write_diagnostic_archive(
             report=report,
@@ -1104,11 +1768,20 @@ def _package_release(args: argparse.Namespace) -> int:
 
 def _add_release_contract_args(parser: argparse.ArgumentParser) -> None:
     """添加 release 完整性契约的公共参数。"""
-    parser.add_argument("--release-dir", required=True, type=Path, help="Release root directory.")
+    parser.add_argument(
+        "--release-dir", required=True, type=Path, help="Release root directory."
+    )
     parser.add_argument("--app", required=True, help="Application id.")
     parser.add_argument("--version", required=True, help="Release version.")
-    parser.add_argument("--platform", required=True, choices=["windows", "macos", "linux"], help="Target platform.")
-    parser.add_argument("--entry-path", required=True, help="Entry path relative to release root.")
+    parser.add_argument(
+        "--platform",
+        required=True,
+        choices=["windows", "macos", "linux"],
+        help="Target platform.",
+    )
+    parser.add_argument(
+        "--entry-path", required=True, help="Entry path relative to release root."
+    )
     parser.add_argument(
         "--required-path",
         dest="required_paths",
@@ -1122,7 +1795,10 @@ def _write_release_contract(args: argparse.Namespace) -> int:
     """写入框架产物的 UOT release 契约。"""
     target = Path(args.release_dir) / "uot-release.json"
     if target.exists() and not bool(args.force):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release contract already exists: {target}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"release contract already exists: {target}",
+        )
     contract = ReleaseArtifactContract(
         app_id=str(args.app).strip(),
         version=str(args.version).strip().removeprefix("v").removeprefix("V"),
@@ -1171,26 +1847,57 @@ def _validate_publish_release_contract(
     try:
         contract = ReleaseArtifactContract.from_payload(payload)
     except UpdateError as exc:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"invalid release contract: {path}: {exc.message}") from exc
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID,
+            f"invalid release contract: {path}: {exc.message}",
+        ) from exc
     normalized_version = str(version).strip().removeprefix("v").removeprefix("V")
     if contract.app_id != str(app_id).strip():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "release contract app_id does not match publish --app")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "release contract app_id does not match publish --app",
+        )
     if contract.version != normalized_version:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "release contract version does not match publish --version")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "release contract version does not match publish --version",
+        )
     if platform and contract.platform != platform:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "release contract platform does not match publish --platform")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "release contract platform does not match publish --platform",
+        )
     try:
         with zipfile.ZipFile(package_path) as archive:
-            packaged_payload = json.loads(archive.read(RELEASE_CONTRACT_FILENAME).decode("utf-8"))
+            packaged_payload = json.loads(
+                archive.read(RELEASE_CONTRACT_FILENAME).decode("utf-8")
+            )
     except KeyError as exc:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "release package does not contain uot-release.json") from exc
-    except (OSError, zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"cannot read release contract from package: {package_path}") from exc
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID,
+            "release package does not contain uot-release.json",
+        ) from exc
+    except (
+        OSError,
+        zipfile.BadZipFile,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID,
+            f"cannot read release contract from package: {package_path}",
+        ) from exc
     if not isinstance(packaged_payload, dict):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "release package contract must be a JSON object")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID,
+            "release package contract must be a JSON object",
+        )
     packaged_contract = ReleaseArtifactContract.from_payload(packaged_payload)
     if packaged_contract != contract:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "release package contract does not match --release-contract")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID,
+            "release package contract does not match --release-contract",
+        )
 
 
 def _load_settings_arg(args: argparse.Namespace) -> UpdateToolSettings:
@@ -1214,10 +1921,14 @@ def _load_manifest_file(path: Path) -> UpdateManifest:
 def _load_manifest_payload(path: Path) -> dict[str, object]:
     """读取 manifest JSON 字典。"""
     if not path.is_file():
-        raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {path}")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_NOT_FOUND, f"manifest not found: {path}"
+        )
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "manifest must be a JSON object")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID, "manifest must be a JSON object"
+        )
     return payload
 
 
@@ -1249,17 +1960,27 @@ def _write_text_atomic(path: Path, content: str) -> None:
         raise
 
 
-def _copy_file_atomic(source_path: Path, target_path: Path) -> None:
+def _copy_file_atomic(
+    source_path: Path,
+    target_path: Path,
+    *,
+    validator: Callable[[Path], object] | None = None,
+) -> None:
     """复制文件到同目录临时文件后原子替换目标。
 
     :param source_path: 源文件。
     :param target_path: 目标文件。
+    :param validator: 原子提升前针对临时副本执行的校验器。
     :return: None
     """
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = target_path.parent / f".{target_path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+    temp_path = (
+        target_path.parent / f".{target_path.name}.{os.getpid()}.{uuid4().hex}.tmp"
+    )
     try:
         shutil.copy2(source_path, temp_path)
+        if validator is not None:
+            validator(temp_path)
         temp_path.replace(target_path)
     except Exception:
         if temp_path.exists():
@@ -1268,7 +1989,9 @@ def _copy_file_atomic(source_path: Path, target_path: Path) -> None:
 
 
 @contextmanager
-def _publish_lock(*, source: NasReleaseSource, app_id: str, channel: str, platform: str) -> Iterator[None]:
+def _publish_lock(
+    *, source: NasReleaseSource, app_id: str, channel: str, platform: str
+) -> Iterator[None]:
     """发布锁，防止同一 app/channel/platform 并发写 latest 和 versions index。
 
     :param source: NAS 发布源。
@@ -1283,10 +2006,23 @@ def _publish_lock(*, source: NasReleaseSource, app_id: str, channel: str, platfo
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError as exc:
-        raise UpdateError(UpdateErrorCode.UPDATE_LOCKED, f"publish lock exists: {lock_path}") from exc
+        raise UpdateError(
+            UpdateErrorCode.UPDATE_LOCKED, f"publish lock exists: {lock_path}"
+        ) from exc
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
-            lock_file.write(json.dumps({"pid": os.getpid(), "app_id": app_id, "channel": channel, "platform": platform}, ensure_ascii=False) + "\n")
+            lock_file.write(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "app_id": app_id,
+                        "channel": channel,
+                        "platform": platform,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         yield
     finally:
         try:
@@ -1295,7 +2031,57 @@ def _publish_lock(*, source: NasReleaseSource, app_id: str, channel: str, platfo
             return
 
 
-def _verify_manifest_payload_if_requested(payload: dict[str, object], signature_key: Path | None) -> None:
+@contextmanager
+def _publish_file_transaction(paths: tuple[Path, ...]) -> Iterator[None]:
+    """在单次发布异常时恢复 package、manifest 与版本索引。"""
+    snapshots: list[tuple[Path, Path | None]] = []
+    try:
+        for path in dict.fromkeys(Path(item) for item in paths):
+            backup: Path | None = None
+            if path.is_file():
+                backup = path.with_name(
+                    f".{path.name}.{os.getpid()}.{uuid4().hex}.backup"
+                )
+                try:
+                    shutil.copy2(path, backup)
+                except Exception:
+                    if backup.exists():
+                        backup.unlink()
+                    raise
+            snapshots.append((path, backup))
+        yield
+    except Exception as exc:
+        restore_errors: list[str] = []
+        for path, backup in reversed(snapshots):
+            try:
+                if backup is None:
+                    if path.exists():
+                        path.unlink()
+                else:
+                    backup.replace(path)
+            except OSError as restore_exc:
+                restore_errors.append(f"{path}: {restore_exc}")
+        if restore_errors:
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID,
+                "publish rollback incomplete; preserve .backup files for recovery: "
+                + "; ".join(restore_errors),
+            ) from exc
+        if isinstance(exc, UpdateError):
+            raise
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"publish transaction failed: {exc}",
+        ) from exc
+    else:
+        for _, backup in snapshots:
+            if backup is not None and backup.exists():
+                backup.unlink()
+
+
+def _verify_manifest_payload_if_requested(
+    payload: dict[str, object], signature_key: Path | None
+) -> None:
     """按需校验 manifest payload 签名。"""
     if signature_key is not None:
         verify_manifest_signature_with_key_file(payload, key_path=Path(signature_key))
@@ -1315,7 +2101,9 @@ def _update_versions_index(
     if index_path.is_file():
         payload = json.loads(index_path.read_text(encoding="utf-8"))
         if isinstance(payload, dict) and isinstance(payload.get("versions"), list):
-            existing_versions = [item for item in payload["versions"] if isinstance(item, dict)]
+            existing_versions = [
+                item for item in payload["versions"] if isinstance(item, dict)
+            ]
     entry = {
         "version": manifest.version,
         "manifest_url": _manifest_url(app_id, manifest.version, platform, channel),
@@ -1329,7 +2117,9 @@ def _update_versions_index(
         "data_schema_version": manifest.data_schema_version,
         "notes": manifest.notes,
     }
-    versions = [item for item in existing_versions if item.get("version") != manifest.version]
+    versions = [
+        item for item in existing_versions if item.get("version") != manifest.version
+    ]
     versions.append(entry)
     versions = sorted(
         versions,
@@ -1348,7 +2138,9 @@ def _update_versions_index(
     )
 
 
-def _package_url(app_id: str, version: str, package_filename: str, platform: str, channel: str) -> str:
+def _package_url(
+    app_id: str, version: str, package_filename: str, platform: str, channel: str
+) -> str:
     """生成 manifest package.url。
 
     :param app_id: 应用标识。
@@ -1383,20 +2175,11 @@ def _normalize_optional_platform(platform: str) -> str:
     :param platform: 原始平台名。
     :return: windows、macos、linux 或空字符串。
     """
-    normalized = str(platform or "").strip().lower()
-    if not normalized:
-        return ""
-    aliases = {
-        "win": "windows",
-        "win32": "windows",
-        "darwin": "macos",
-        "mac": "macos",
-        "osx": "macos",
-    }
-    normalized = aliases.get(normalized, normalized)
-    if normalized not in {"windows", "macos", "linux"}:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"unsupported platform: {platform}")
-    return normalized
+    return validate_release_platform(
+        platform,
+        allow_empty=True,
+        allow_aliases=True,
+    )
 
 
 def _sha256_of(path: Path) -> str:

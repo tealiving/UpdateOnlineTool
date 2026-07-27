@@ -16,7 +16,9 @@ from update_online_tool.release_contract import (
 )
 
 
-def test_write_and_validate_release_contract_with_required_runtime_files(tmp_path: Path) -> None:
+def test_write_and_validate_release_contract_with_required_runtime_files(
+    tmp_path: Path,
+) -> None:
     """验证契约会绑定版本、入口和必需运行时资源。"""
     release_dir = _write_release(tmp_path, version="1.2.3")
     contract = ReleaseArtifactContract(
@@ -44,7 +46,9 @@ def test_write_and_validate_release_contract_with_required_runtime_files(tmp_pat
     assert validated == contract
 
 
-def test_validate_release_artifact_rejects_missing_required_runtime_file(tmp_path: Path) -> None:
+def test_validate_release_artifact_rejects_missing_required_runtime_file(
+    tmp_path: Path,
+) -> None:
     """验证缺少 settings 的 release 不能被 UOT 切换或回滚。"""
     release_dir = _write_release(tmp_path, version="1.2.3")
 
@@ -53,14 +57,18 @@ def test_validate_release_artifact_rejects_missing_required_runtime_file(tmp_pat
             release_dir=release_dir,
             version="1.2.3",
             entry_path="DesktopFloatingTimer.app",
-            required_paths=("DesktopFloatingTimer.app/Contents/Resources/uot/settings.json",),
+            required_paths=(
+                "DesktopFloatingTimer.app/Contents/Resources/uot/settings.json",
+            ),
         )
 
     assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
     assert "required release path not found" in error.value.message
 
 
-def test_validate_release_artifact_rejects_contract_version_mismatch(tmp_path: Path) -> None:
+def test_validate_release_artifact_rejects_contract_version_mismatch(
+    tmp_path: Path,
+) -> None:
     """验证 release 目录版本与契约版本不一致时拒绝启动。"""
     release_dir = _write_release(tmp_path, version="1.2.3")
     invalid = ReleaseArtifactContract(
@@ -87,10 +95,14 @@ def test_validate_release_artifact_rejects_contract_version_mismatch(tmp_path: P
     assert "release contract version" in error.value.message
 
 
-def test_validate_release_artifact_keeps_legacy_release_compatible(tmp_path: Path) -> None:
+def test_validate_release_artifact_keeps_legacy_release_compatible(
+    tmp_path: Path,
+) -> None:
     """验证未生成契约的旧 release 仍可按宿主必需资源规则检查。"""
     release_dir = _write_release(tmp_path, version="1.2.3")
-    settings_path = release_dir / "DesktopFloatingTimer.app/Contents/Resources/uot/settings.json"
+    settings_path = (
+        release_dir / "DesktopFloatingTimer.app/Contents/Resources/uot/settings.json"
+    )
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text("{}", encoding="utf-8")
 
@@ -98,7 +110,9 @@ def test_validate_release_artifact_keeps_legacy_release_compatible(tmp_path: Pat
         release_dir=release_dir,
         version="1.2.3",
         entry_path="DesktopFloatingTimer.app",
-        required_paths=("DesktopFloatingTimer.app/Contents/Resources/uot/settings.json",),
+        required_paths=(
+            "DesktopFloatingTimer.app/Contents/Resources/uot/settings.json",
+        ),
     )
 
     assert validated is None
@@ -121,10 +135,29 @@ def test_release_contract_payload_rejects_unsafe_required_path() -> None:
     assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
 
 
+def test_release_contract_payload_rejects_platform_alias() -> None:
+    """新 release contract 必须使用规范平台值。"""
+    with pytest.raises(UpdateError) as error:
+        ReleaseArtifactContract.from_payload(
+            {
+                "schema_version": 1,
+                "app_id": "desktop-floating-timer",
+                "version": "1.2.3",
+                "platform": "win32",
+                "entry_path": "DesktopFloatingTimer.app",
+                "required_paths": [],
+            }
+        )
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
 def _write_release(tmp_path: Path, *, version: str) -> Path:
     """写入最小 macOS release。"""
     release_dir = tmp_path / "releases" / version
-    executable = release_dir / "DesktopFloatingTimer.app/Contents/MacOS/DesktopFloatingTimer"
+    executable = (
+        release_dir / "DesktopFloatingTimer.app/Contents/MacOS/DesktopFloatingTimer"
+    )
     executable.parent.mkdir(parents=True)
     executable.write_text("app", encoding="utf-8")
     return release_dir

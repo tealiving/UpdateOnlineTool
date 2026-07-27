@@ -60,7 +60,11 @@ UOT 当前采用单机 CLI 发布模型：发布人员在发布机上运行 `uot
 
 `versions.json.manifest_url` 是历史版本选择器的权威路径。`list-remote` 和 `show-version` 优先使用索引，并兼容旧版 `<app>/v<version>` 布局。
 
-状态：符合单机发布模型。发布端使用 `publish.lock` 防止同一 app/channel/platform 重复发布写入，并通过同目录临时文件 `replace` 原子提升 package、manifest、channel `latest.json` 和 `versions.json`。
+状态：符合单机发布模型。发布端使用 `publish.lock` 防止同一 app/channel/platform
+重复写入，并通过同目录临时文件 `replace` 原子提升每个文件。单次进程内任一步
+失败时恢复 package、manifest、channel `latest.json` 和 `versions.json` 的旧
+快照；这不是 SMB 多文件分布式事务，进程崩溃后应保留 `.backup` 作为人工恢复
+证据并重新执行 `uot verify`。
 
 建议：后续可增加发布审计日志和失败恢复报告，便于定位 NAS 中断或权限异常；不需要引入发布服务部署。
 
@@ -130,10 +134,17 @@ runtime 支持 `--wait-pid`、`--wait-timeout` 和 `--restart`。旧 GUI 退出�
 
 ## 当前企业级差距
 
-P0：暂无已知会直接破坏安装根的阻断问题。
+P0：2026-07 路径审计发现发布标识与 manifest version 可造成受控目录逃逸，
+Python Bootstrap 也未对齐原生 Bootstrap 的包含性合同。现已通过统一 release
+identity、NAS/runtime 多边界复验和 Python/Rust Bootstrap 合同完成修复。
 
 P1：
 
+- `package-release`、外部 `publish`/`verify`、SDK `prepare` 和 runtime 已统一
+  接入 `ReleasePackagePlan`；Agent/Bridge 故障注入已验证错误透传、旧状态保留
+  和无事务临时残留。
+- Windows long-path 开/关、macOS 归一化卷和 Linux case-sensitive 文件系统仍需
+  真机 harness 验收；单元矩阵已覆盖中文、保留名、长度和名称冲突。
 - `update.lock` 无 stale lock 判定和恢复命令，只能人工或 doctor 辅助处理。
 
 P2：

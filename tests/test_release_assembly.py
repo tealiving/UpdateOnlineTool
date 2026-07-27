@@ -4,24 +4,32 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from update_online_tool.errors import UpdateError
+from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.release_assembly import (
     ReleaseAssemblyAsset,
     ReleaseAssemblyConfig,
     assemble_release_layout,
     create_release_package,
 )
-from update_online_tool.release_contract import RELEASE_CONTRACT_FILENAME, ReleaseArtifactContract, read_release_contract, write_release_contract
+from update_online_tool.release_contract import (
+    RELEASE_CONTRACT_FILENAME,
+    ReleaseArtifactContract,
+    read_release_contract,
+    write_release_contract,
+)
 import update_online_tool.release_assembly as release_assembly
 
 
-def test_assemble_release_layout_keeps_electron_like_release_and_stable_launcher(tmp_path: Path) -> None:
+def test_assemble_release_layout_keeps_electron_like_release_and_stable_launcher(
+    tmp_path: Path,
+) -> None:
     """通用装配可保留 Electron 类目录并生成标准 UOT 安装布局。"""
     release_dir = tmp_path / "electron-win"
     launcher_dir = tmp_path / "bootstrap"
@@ -49,20 +57,34 @@ def test_assemble_release_layout_keeps_electron_like_release_and_stable_launcher
             release_entry_path="Demo.exe",
             launcher_entry_path="DemoBootstrap.exe",
             updater_bundle=updater_bundle,
-            assets=(ReleaseAssemblyAsset(settings_path, "resources/uot/settings.json"),),
+            assets=(
+                ReleaseAssemblyAsset(settings_path, "resources/uot/settings.json"),
+            ),
         )
     )
 
-    current = json.loads((result.install_root / "current.json").read_text(encoding="utf-8"))
+    current = json.loads(
+        (result.install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert (result.install_root / "Demo.exe").read_text(encoding="utf-8") == "bootstrap"
     assert (result.release_dir / "Demo.exe").read_text(encoding="utf-8") == "electron"
-    assert (result.release_dir / "resources" / "app.asar").read_text(encoding="utf-8") == "asar"
+    assert (result.release_dir / "resources" / "app.asar").read_text(
+        encoding="utf-8"
+    ) == "asar"
     assert (result.release_dir / "resources" / "uot" / "settings.json").is_file()
     assert (result.update_root / "Demo.exe").read_text(encoding="utf-8") == "electron"
-    assert (result.update_root / "_launcher" / "Demo.exe").read_text(encoding="utf-8") == "bootstrap"
+    assert (result.update_root / "_launcher" / "Demo.exe").read_text(
+        encoding="utf-8"
+    ) == "bootstrap"
     assert (result.update_root / "resources" / "uot" / "settings.json").is_file()
-    assert (result.install_root / "updater" / "uot-updater" / "uot-updater.exe").is_file()
-    assert current["entry"] == {"kind": "executable", "path": "Demo.exe", "platform": "windows"}
+    assert (
+        result.install_root / "updater" / "uot-updater" / "uot-updater.exe"
+    ).is_file()
+    assert current["entry"] == {
+        "kind": "executable",
+        "path": "Demo.exe",
+        "platform": "windows",
+    }
     install_contract = read_release_contract(result.release_dir)
     update_contract = read_release_contract(result.update_root)
     assert install_contract is not None
@@ -72,7 +94,9 @@ def test_assemble_release_layout_keeps_electron_like_release_and_stable_launcher
     assert (result.update_root / RELEASE_CONTRACT_FILENAME).is_file()
 
 
-def test_assemble_release_layout_keeps_bootstrap_and_agent_out_of_update_package(tmp_path: Path) -> None:
+def test_assemble_release_layout_keeps_bootstrap_and_agent_out_of_update_package(
+    tmp_path: Path,
+) -> None:
     """新稳定运行时模式只把 release 放入更新包，避免覆盖 Bootstrap/Agent。"""
     release_dir = tmp_path / "electron-win"
     bootstrap_dir = tmp_path / "bootstrap"
@@ -101,7 +125,9 @@ def test_assemble_release_layout_keeps_bootstrap_and_agent_out_of_update_package
         )
     )
 
-    assert (result.install_root / "DemoBootstrap.exe").read_text(encoding="utf-8") == "bootstrap"
+    assert (result.install_root / "DemoBootstrap.exe").read_text(
+        encoding="utf-8"
+    ) == "bootstrap"
     assert result.launcher_entry == result.install_root / "DemoBootstrap.exe"
     assert result.agent_path == result.install_root / "agent" / "uot-agent"
     assert (result.agent_path / "uot-agent.exe").read_text(encoding="utf-8") == "agent"
@@ -110,7 +136,9 @@ def test_assemble_release_layout_keeps_bootstrap_and_agent_out_of_update_package
     assert not (result.update_root / "agent").exists()
 
 
-def test_assemble_release_layout_keeps_tauri_app_and_stable_bootstrap_separate(tmp_path: Path) -> None:
+def test_assemble_release_layout_keeps_tauri_app_and_stable_bootstrap_separate(
+    tmp_path: Path,
+) -> None:
     """稳定模式保留 Tauri `.app` release，并把 Bootstrap 固定在安装根。"""
     release_dir = tmp_path / "tauri-release"
     bootstrap_dir = tmp_path / "bootstrap"
@@ -119,7 +147,9 @@ def test_assemble_release_layout_keeps_tauri_app_and_stable_bootstrap_separate(t
     (app_bundle / "Contents" / "MacOS").mkdir(parents=True)
     bootstrap_dir.mkdir()
     agent_bundle.mkdir()
-    (app_bundle / "Contents" / "MacOS" / "DesktopFloatingTimer").write_text("tauri", encoding="utf-8")
+    (app_bundle / "Contents" / "MacOS" / "DesktopFloatingTimer").write_text(
+        "tauri", encoding="utf-8"
+    )
     (bootstrap_dir / "uot-bootstrap").write_text("bootstrap", encoding="utf-8")
     (agent_bundle / "uot-agent").write_text("agent", encoding="utf-8")
 
@@ -140,16 +170,34 @@ def test_assemble_release_layout_keeps_tauri_app_and_stable_bootstrap_separate(t
         )
     )
 
-    current = json.loads((result.install_root / "current.json").read_text(encoding="utf-8"))
-    assert (result.install_root / "uot-bootstrap").read_text(encoding="utf-8") == "bootstrap"
+    current = json.loads(
+        (result.install_root / "current.json").read_text(encoding="utf-8")
+    )
+    assert (result.install_root / "uot-bootstrap").read_text(
+        encoding="utf-8"
+    ) == "bootstrap"
     assert result.launcher_entry == result.install_root / "uot-bootstrap"
-    assert (result.release_dir / "DesktopFloatingTimer.app" / "Contents" / "MacOS" / "DesktopFloatingTimer").read_text(encoding="utf-8") == "tauri"
+    assert (
+        result.release_dir
+        / "DesktopFloatingTimer.app"
+        / "Contents"
+        / "MacOS"
+        / "DesktopFloatingTimer"
+    ).read_text(encoding="utf-8") == "tauri"
     assert not (result.install_root / "DesktopFloatingTimer.app").exists()
-    assert (result.update_root / "DesktopFloatingTimer.app" / "Contents" / "MacOS" / "DesktopFloatingTimer").is_file()
+    assert (
+        result.update_root
+        / "DesktopFloatingTimer.app"
+        / "Contents"
+        / "MacOS"
+        / "DesktopFloatingTimer"
+    ).is_file()
     assert current["executable"] == "DesktopFloatingTimer.app"
 
 
-def test_assemble_release_layout_rejects_asset_path_outside_release(tmp_path: Path) -> None:
+def test_assemble_release_layout_rejects_asset_path_outside_release(
+    tmp_path: Path,
+) -> None:
     """通用装配拒绝写到 release 根目录之外的附加资源路径。"""
     release_dir = tmp_path / "release"
     launcher_dir = tmp_path / "launcher"
@@ -178,7 +226,9 @@ def test_assemble_release_layout_rejects_asset_path_outside_release(tmp_path: Pa
         )
 
 
-def test_assemble_release_layout_rejects_source_contract_with_wrong_version(tmp_path: Path) -> None:
+def test_assemble_release_layout_rejects_source_contract_with_wrong_version(
+    tmp_path: Path,
+) -> None:
     """验证装配不会用错误 CLI 版本覆盖框架构建时写入的契约。"""
     release_dir = tmp_path / "release"
     launcher_dir = tmp_path / "launcher"
@@ -213,7 +263,9 @@ def test_assemble_release_layout_rejects_source_contract_with_wrong_version(tmp_
         )
 
 
-def test_assemble_release_layout_preserves_source_contract_required_paths(tmp_path: Path) -> None:
+def test_assemble_release_layout_preserves_source_contract_required_paths(
+    tmp_path: Path,
+) -> None:
     """装配不得丢失框架 release 已声明的运行时必需资源。"""
     release_dir = tmp_path / "release"
     launcher_dir = tmp_path / "launcher"
@@ -252,7 +304,9 @@ def test_assemble_release_layout_preserves_source_contract_required_paths(tmp_pa
     assert read_release_contract(result.update_root) == source_contract
 
 
-def test_assemble_release_layout_rejects_output_overlapping_source(tmp_path: Path) -> None:
+def test_assemble_release_layout_rejects_output_overlapping_source(
+    tmp_path: Path,
+) -> None:
     """通用装配在 force 模式下也不能删除输入构建产物。"""
     release_dir = tmp_path / "release"
     launcher_dir = tmp_path / "launcher"
@@ -279,7 +333,9 @@ def test_assemble_release_layout_rejects_output_overlapping_source(tmp_path: Pat
         )
 
 
-def test_assemble_release_layout_force_ignores_vanished_external_drive_metadata(tmp_path: Path, monkeypatch) -> None:
+def test_assemble_release_layout_force_ignores_vanished_external_drive_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
     """ExFAT 清理期间消失的 AppleDouble 元数据不能中断受控重建。"""
     release_dir = tmp_path / "release"
     launcher_dir = tmp_path / "bootstrap"
@@ -302,7 +358,9 @@ def test_assemble_release_layout_force_ignores_vanished_external_drive_metadata(
             onerror(os.unlink, str(Path(path) / "._Demo.exe"), sys.exc_info())
         original_rmtree(path, onerror=onerror)
 
-    monkeypatch.setattr(release_assembly.shutil, "rmtree", rmtree_with_vanished_metadata)
+    monkeypatch.setattr(
+        release_assembly.shutil, "rmtree", rmtree_with_vanished_metadata
+    )
 
     result = assemble_release_layout(
         ReleaseAssemblyConfig(
@@ -325,7 +383,9 @@ def test_assemble_release_layout_force_ignores_vanished_external_drive_metadata(
     assert (result.install_root / "releases" / "1.0.0" / "Demo.exe").is_file()
 
 
-def test_create_release_package_preserves_unicode_paths_and_excludes_appledouble_metadata(tmp_path: Path) -> None:
+def test_create_release_package_preserves_unicode_paths_and_excludes_appledouble_metadata(
+    tmp_path: Path,
+) -> None:
     """发布包使用 UTF-8 路径，且不携带 ExFAT/macOS 伴生元数据。"""
     release_dir = tmp_path / "release"
     app_dir = release_dir / "桌面悬浮计时器.app" / "Contents" / "MacOS"
@@ -341,3 +401,39 @@ def test_create_release_package_preserves_unicode_paths_and_excludes_appledouble
     assert "桌面悬浮计时器.app/Contents/MacOS/app" in names
     assert not any(Path(name).name.startswith("._") for name in names)
     assert ".DS_Store" not in names
+
+
+def test_create_release_package_keeps_previous_output_when_layout_is_invalid(
+    tmp_path: Path,
+) -> None:
+    """package plan 失败时不得用非法包覆盖上一份有效交付物。"""
+    release_dir = tmp_path / "release"
+    release_dir.mkdir()
+    (release_dir / "CON.txt").write_text("invalid on Windows", encoding="utf-8")
+    output = tmp_path / "package.zip"
+    output.write_bytes(b"previous-package")
+
+    with pytest.raises(UpdateError) as error:
+        create_release_package(release_dir, output, force=True)
+
+    assert error.value.code is UpdateErrorCode.PACKAGE_LAYOUT_INVALID
+    assert output.read_bytes() == b"previous-package"
+    assert not list(tmp_path.glob(".package.zip.*.tmp"))
+
+
+def test_create_release_package_preserves_symlink_member(tmp_path: Path) -> None:
+    """内置打包器不得把 macOS/Linux symlink 静默解引用。"""
+    release_dir = tmp_path / "release"
+    release_dir.mkdir()
+    (release_dir / "runtime.dylib").write_text("runtime", encoding="utf-8")
+    try:
+        (release_dir / "current.dylib").symlink_to("runtime.dylib")
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink is not available: {exc}")
+
+    package = create_release_package(release_dir, tmp_path / "package.zip")
+
+    with zipfile.ZipFile(package) as archive:
+        member = archive.getinfo("current.dylib")
+        assert stat.S_ISLNK(member.external_attr >> 16)
+        assert archive.read(member).decode("utf-8") == "runtime.dylib"

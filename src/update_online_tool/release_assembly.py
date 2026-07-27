@@ -12,12 +12,13 @@ from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.release_contract import (
-    RELEASE_CONTRACT_FILENAME,
     ReleaseArtifactContract,
     read_release_contract,
     validate_release_artifact,
     write_release_contract,
 )
+from update_online_tool.release_identity import validate_release_platform
+from update_online_tool.release_package import ReleasePackagePlan
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,9 @@ class ReleaseAssemblyResult:
     agent_path: Path | None = None
 
 
-def create_release_package(source_dir: Path, output_path: Path, *, force: bool = False) -> Path:
+def create_release_package(
+    source_dir: Path, output_path: Path, *, force: bool = False
+) -> Path:
     """创建可由 UOT 安全解包的 release zip。
 
     使用 Python ``zipfile`` 写入 UTF-8 文件名，避免 macOS ``zip`` 在中文 `.app`
@@ -75,15 +78,39 @@ def create_release_package(source_dir: Path, output_path: Path, *, force: bool =
     output = Path(output_path)
     _ensure_directory(source, "release package source directory")
     if output.exists() and not force:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release package already exists: {output}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"release package already exists: {output}",
+        )
     if _paths_overlap(source.resolve(), output.resolve()):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "release package output overlaps source")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, "release package output overlaps source"
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for path in sorted(source.rglob("*")):
-            if not path.is_file() or _is_packaging_metadata(path):
-                continue
-            archive.write(path, path.relative_to(source).as_posix())
+    temporary = output.with_name(f".{output.name}.{os.getpid()}.{uuid4().hex}.tmp")
+    try:
+        with zipfile.ZipFile(
+            temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+        ) as archive:
+            for path in sorted(source.rglob("*")):
+                if _is_packaging_metadata(path):
+                    continue
+                archive_name = path.relative_to(source).as_posix()
+                if path.is_symlink():
+                    member = zipfile.ZipInfo(archive_name)
+                    member.create_system = 3
+                    member.compress_type = zipfile.ZIP_DEFLATED
+                    member.external_attr = (path.lstat().st_mode & 0xFFFF) << 16
+                    archive.writestr(member, os.readlink(path).encode("utf-8"))
+                    continue
+                if path.is_file():
+                    archive.write(path, archive_name)
+        ReleasePackagePlan.from_zip(temporary)
+        temporary.replace(output)
+    except Exception:
+        if temporary.exists():
+            temporary.unlink()
+        raise
     return output
 
 
@@ -98,19 +125,33 @@ def assemble_release_layout(config: ReleaseAssemblyConfig) -> ReleaseAssemblyRes
     platform = _normalize_platform(config.platform)
     entry_path = _relative_path(config.entry_path, "entry_path")
     release_entry_path = _relative_path(config.release_entry_path, "release_entry_path")
-    launcher_entry_path = _relative_path(config.launcher_entry_path, "launcher_entry_path")
+    launcher_entry_path = _relative_path(
+        config.launcher_entry_path, "launcher_entry_path"
+    )
     release_dir = Path(config.release_dir)
     launcher_dir = Path(config.launcher_dir)
     _ensure_directory(release_dir, "release directory")
     _ensure_directory(launcher_dir, "launcher directory")
     if not _is_entry_path(release_dir / release_entry_path):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release entry not found: {release_dir / release_entry_path}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"release entry not found: {release_dir / release_entry_path}",
+        )
     if not _is_entry_path(launcher_dir / launcher_entry_path):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"launcher entry not found: {launcher_dir / launcher_entry_path}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"launcher entry not found: {launcher_dir / launcher_entry_path}",
+        )
     if config.bootstrap_agent_mode and config.agent_bundle is None:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "bootstrap_agent_mode requires agent_bundle")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "bootstrap_agent_mode requires agent_bundle",
+        )
     if config.bootstrap_agent_mode and config.updater_bundle is not None:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "bootstrap_agent_mode does not support updater_bundle")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "bootstrap_agent_mode does not support updater_bundle",
+        )
     source_contract = read_release_contract(release_dir)
     if source_contract is not None:
         validate_release_artifact(
@@ -139,7 +180,9 @@ def assemble_release_layout(config: ReleaseAssemblyConfig) -> ReleaseAssemblyRes
 
     install_release_dir = install_root / "releases" / version
     shutil.copytree(release_dir, install_release_dir, symlinks=True)
-    _rename_entry(install_release_dir, source_path=release_entry_path, target_path=entry_path)
+    _rename_entry(
+        install_release_dir, source_path=release_entry_path, target_path=entry_path
+    )
     shutil.copytree(launcher_dir, install_root, dirs_exist_ok=True, symlinks=True)
     # Bootstrap/Agent 模式的稳定入口不能伪装成 release 入口。尤其在 macOS，
     # current.json 必须继续指向 releases/<version>/<Product>.app，而安装根只
@@ -147,24 +190,38 @@ def assemble_release_layout(config: ReleaseAssemblyConfig) -> ReleaseAssemblyRes
     if config.bootstrap_agent_mode:
         launcher_entry = install_root / launcher_entry_path
     else:
-        _rename_entry(install_root, source_path=launcher_entry_path, target_path=entry_path)
+        _rename_entry(
+            install_root, source_path=launcher_entry_path, target_path=entry_path
+        )
         launcher_entry = install_root / entry_path
-    _write_current_json(install_root / "current.json", app_id=app_id, version=version, entry_path=entry_path, platform=platform)
+    _write_current_json(
+        install_root / "current.json",
+        app_id=app_id,
+        version=version,
+        entry_path=entry_path,
+        platform=platform,
+    )
     _copy_assets(config.assets, install_release_dir)
     contract = source_contract or ReleaseArtifactContract(
         app_id=app_id,
         version=version,
         platform=platform,
         entry_path=entry_path.as_posix(),
-        required_paths=tuple(_asset_target_path(asset.target_path).as_posix() for asset in config.assets),
+        required_paths=tuple(
+            _asset_target_path(asset.target_path).as_posix() for asset in config.assets
+        ),
     )
     write_release_contract(install_release_dir, contract)
     updater_path = None
     agent_path = None
     if config.bootstrap_agent_mode:
-        agent_path = _copy_bundle(config.agent_bundle, install_root / "agent", config.agent_name)
+        agent_path = _copy_bundle(
+            config.agent_bundle, install_root / "agent", config.agent_name
+        )
     else:
-        updater_path = _copy_bundle(config.updater_bundle, install_root / "updater", config.updater_name)
+        updater_path = _copy_bundle(
+            config.updater_bundle, install_root / "updater", config.updater_name
+        )
 
     shutil.copytree(release_dir, update_root, dirs_exist_ok=True, symlinks=True)
     _rename_entry(update_root, source_path=release_entry_path, target_path=entry_path)
@@ -173,8 +230,12 @@ def assemble_release_layout(config: ReleaseAssemblyConfig) -> ReleaseAssemblyRes
     if not config.bootstrap_agent_mode:
         update_launcher_dir = update_root / "_launcher"
         shutil.copytree(launcher_dir, update_launcher_dir, symlinks=True)
-        _rename_entry(update_launcher_dir, source_path=launcher_entry_path, target_path=entry_path)
-        _copy_bundle(config.updater_bundle, update_root / "updater", config.updater_name)
+        _rename_entry(
+            update_launcher_dir, source_path=launcher_entry_path, target_path=entry_path
+        )
+        _copy_bundle(
+            config.updater_bundle, update_root / "updater", config.updater_name
+        )
 
     return ReleaseAssemblyResult(
         install_root=install_root,
@@ -196,19 +257,19 @@ def _normalize_version(version: str) -> str:
 
 def _normalize_platform(platform: str) -> str:
     """规范化目标平台。"""
-    normalized = str(platform or "windows").strip().lower()
-    aliases = {"win": "windows", "win32": "windows", "darwin": "macos", "mac": "macos", "osx": "macos"}
-    normalized = aliases.get(normalized, normalized)
-    if normalized not in {"windows", "macos", "linux"}:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"unsupported platform: {platform}")
-    return normalized
+    return validate_release_platform(
+        platform or "windows",
+        allow_aliases=True,
+    )
 
 
 def _require_text(value: str, field_name: str) -> str:
     """返回非空文本。"""
     text = str(value or "").strip()
     if not text:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must be non-empty")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must be non-empty"
+        )
     return text
 
 
@@ -216,17 +277,25 @@ def _relative_path(value: str, field_name: str) -> Path:
     """校验并返回安全的 POSIX 相对路径。"""
     text = _require_text(value, field_name)
     if "\\" in text:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must use forward slashes")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must use forward slashes"
+        )
     candidate = PurePosixPath(text)
-    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must be relative")
+    if candidate.is_absolute() or any(
+        part in {"", ".", ".."} for part in candidate.parts
+    ):
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must be relative"
+        )
     return Path(*candidate.parts)
 
 
 def _ensure_directory(path: Path, label: str) -> None:
     """确认构建产物目录存在。"""
     if not path.is_dir():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"{label} not found: {path}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"{label} not found: {path}"
+        )
 
 
 def _ensure_output_paths_are_disjoint(
@@ -238,11 +307,15 @@ def _ensure_output_paths_are_disjoint(
     """拒绝会覆盖构建输入或彼此嵌套的输出目录。"""
     output_paths = (install_root.resolve(), update_root.resolve())
     if _paths_overlap(*output_paths):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "assembly outputs must not overlap")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, "assembly outputs must not overlap"
+        )
     for output_path in output_paths:
         for source_path in source_paths:
             if _paths_overlap(output_path, source_path.resolve()):
-                raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "assembly output overlaps source")
+                raise UpdateError(
+                    UpdateErrorCode.SETTINGS_INVALID, "assembly output overlaps source"
+                )
 
 
 def _paths_overlap(first: Path, second: Path) -> bool:
@@ -254,7 +327,9 @@ def _prepare_output_dir(path: Path, *, force: bool) -> None:
     """准备输出目录。"""
     if path.exists():
         if not force:
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {path}")
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {path}"
+            )
         _remove_output_dir(path)
     path.mkdir(parents=True)
 
@@ -262,7 +337,9 @@ def _prepare_output_dir(path: Path, *, force: bool) -> None:
 def _remove_output_dir(path: Path) -> None:
     """删除重建目录，容忍外置盘 AppleDouble 文件在遍历期间消失。"""
 
-    def ignore_vanished_metadata(_function: object, target: str, error_info: tuple[object, object, object]) -> None:
+    def ignore_vanished_metadata(
+        _function: object, target: str, error_info: tuple[object, object, object]
+    ) -> None:
         error = error_info[1]
         if isinstance(error, FileNotFoundError):
             return
@@ -279,7 +356,9 @@ def _rename_entry(root: Path, *, source_path: Path, target_path: Path) -> None:
     source = root / source_path
     target = root / target_path
     if not _is_entry_path(source):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"entry not found: {source}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"entry not found: {source}"
+        )
     if source == target:
         return
     if target.exists():
@@ -296,7 +375,9 @@ def _copy_assets(assets: tuple[ReleaseAssemblyAsset, ...], release_root: Path) -
     for asset in assets:
         source = Path(asset.source_path)
         if not source.is_file():
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release asset not found: {source}")
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID, f"release asset not found: {source}"
+            )
         target = release_root / _asset_target_path(asset.target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
@@ -307,16 +388,22 @@ def _asset_target_path(value: str) -> Path:
     try:
         return _relative_path(value, "asset target path")
     except UpdateError as exc:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "asset target path must be relative") from exc
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, "asset target path must be relative"
+        ) from exc
 
 
-def _copy_bundle(bundle: Path | None, target_root: Path, target_name: str) -> Path | None:
+def _copy_bundle(
+    bundle: Path | None, target_root: Path, target_name: str
+) -> Path | None:
     """复制独立 updater 或 Agent bundle 到稳定安装根。"""
     if bundle is None:
         return None
     source = Path(bundle)
     if not source.exists():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"runtime bundle not found: {source}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"runtime bundle not found: {source}"
+        )
     target_root.mkdir(parents=True, exist_ok=True)
     target = target_root / (str(target_name or "").strip() or source.name)
     if source.is_dir():
@@ -326,7 +413,9 @@ def _copy_bundle(bundle: Path | None, target_root: Path, target_name: str) -> Pa
     return target
 
 
-def _write_current_json(path: Path, *, app_id: str, version: str, entry_path: Path, platform: str) -> None:
+def _write_current_json(
+    path: Path, *, app_id: str, version: str, entry_path: Path, platform: str
+) -> None:
     """原子写入安装根 current.json。"""
     entry = entry_path.as_posix()
     payload = {
@@ -334,11 +423,17 @@ def _write_current_json(path: Path, *, app_id: str, version: str, entry_path: Pa
         "version": version,
         "release_dir": f"releases/{version}",
         "executable": entry,
-        "entry": {"kind": "app_bundle" if entry.endswith(".app") else "executable", "path": entry, "platform": platform},
+        "entry": {
+            "kind": "app_bundle" if entry.endswith(".app") else "executable",
+            "path": entry,
+            "platform": platform,
+        },
     }
     temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid4().hex}.tmp")
     try:
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         temporary.replace(path)
     except Exception:
         if temporary.exists():
@@ -361,4 +456,6 @@ def _is_macos_app_bundle(path: Path) -> bool:
     if not path.is_dir() or path.suffix != ".app":
         return False
     macos_dir = path / "Contents" / "MacOS"
-    return macos_dir.is_dir() and any(candidate.is_file() for candidate in macos_dir.iterdir())
+    return macos_dir.is_dir() and any(
+        candidate.is_file() for candidate in macos_dir.iterdir()
+    )

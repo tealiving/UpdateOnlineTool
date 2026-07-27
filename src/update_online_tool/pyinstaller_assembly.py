@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
-from update_online_tool.release_assembly import ReleaseAssemblyAsset, ReleaseAssemblyConfig, assemble_release_layout
+from update_online_tool.release_assembly import (
+    ReleaseAssemblyAsset,
+    ReleaseAssemblyConfig,
+    assemble_release_layout,
+)
+from update_online_tool.release_identity import validate_release_platform
 
 
 @dataclass(frozen=True)
@@ -142,10 +147,13 @@ def default_pyinstaller_assembly_config(
         app_id=_require_text(app_id or normalized_product_name, "app_id"),
         dist_dir=dist_root,
         product_name=normalized_product_name,
-        release_dir=dist_root / f"{normalized_product_name}_release_v{normalized_version}",
+        release_dir=dist_root
+        / f"{normalized_product_name}_release_v{normalized_version}",
         launcher_dir=dist_root / f"{normalized_product_name}_launcher",
-        install_output=dist_root / f"{normalized_product_name}_install_v{normalized_version}",
-        update_output=dist_root / f"{normalized_product_name}_update_v{normalized_version}",
+        install_output=dist_root
+        / f"{normalized_product_name}_install_v{normalized_version}",
+        update_output=dist_root
+        / f"{normalized_product_name}_update_v{normalized_version}",
         platform=normalized_platform,
         entry_name=_optional_text(entry_name),
         release_entry_name=_optional_text(release_entry_name),
@@ -266,7 +274,9 @@ def _write_runtime_pyinstaller_spec(
     spec_path = root / f"{product_name}.spec"
     for path in (entry_script, spec_path):
         if path.exists() and not force:
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {path}")
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID, f"output already exists: {path}"
+            )
     entry_script.write_text(_runtime_entry_script(entry_module), encoding="utf-8")
     spec_path.write_text(
         _runtime_spec_text(
@@ -283,18 +293,28 @@ def _write_runtime_pyinstaller_spec(
         output_dir=root,
         spec_path=spec_path,
         entry_script=entry_script,
-        pyinstaller_command=["python", "-m", "PyInstaller", "--noconfirm", str(spec_path)],
+        pyinstaller_command=[
+            "python",
+            "-m",
+            "PyInstaller",
+            "--noconfirm",
+            str(spec_path),
+        ],
     )
 
 
-def assemble_pyinstaller_release(config: PyInstallerAssemblyConfig) -> PyInstallerAssemblyResult:
+def assemble_pyinstaller_release(
+    config: PyInstallerAssemblyConfig,
+) -> PyInstallerAssemblyResult:
     """装配 PyInstaller GUI release 与稳定 launcher。
 
     :param config: 装配配置。
     :return: 装配结果。
     """
     platform = _normalize_platform(config.platform)
-    desired_entry = config.entry_name or _default_entry_name(config.product_name, platform)
+    desired_entry = config.entry_name or _default_entry_name(
+        config.product_name, platform
+    )
     _ensure_runtime(config.release_dir, platform)
     _ensure_runtime(config.launcher_dir, platform)
     release_source_exe = _resolve_release_executable(
@@ -386,7 +406,9 @@ def _require_text(value: str, field_name: str) -> str:
     """
     text = str(value or "").strip()
     if not text:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must be non-empty")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"{field_name} must be non-empty"
+        )
     return text
 
 
@@ -405,18 +427,10 @@ def _normalize_platform(platform: str) -> str:
     :param platform: 原始平台名。
     :return: windows、macos 或 linux。
     """
-    normalized = str(platform or "windows").strip().lower()
-    aliases = {
-        "win": "windows",
-        "win32": "windows",
-        "darwin": "macos",
-        "mac": "macos",
-        "osx": "macos",
-    }
-    normalized = aliases.get(normalized, normalized)
-    if normalized not in {"windows", "macos", "linux"}:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"unsupported platform: {platform}")
-    return normalized
+    return validate_release_platform(
+        platform or "windows",
+        allow_aliases=True,
+    )
 
 
 def _default_entry_name(product_name: str, platform: str) -> str:
@@ -444,16 +458,28 @@ def _ensure_runtime(bundle_dir: Path, platform: str) -> None:
     :return: None
     """
     if not bundle_dir.is_dir():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"PyInstaller bundle not found: {bundle_dir}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"PyInstaller bundle not found: {bundle_dir}",
+        )
     if platform == "macos" and _has_macos_app_bundle(bundle_dir):
         return
     internal_dir = bundle_dir / "_internal"
     if not internal_dir.is_dir():
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"PyInstaller _internal not found: {internal_dir}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"PyInstaller _internal not found: {internal_dir}",
+        )
     if platform == "windows" and not any(internal_dir.glob("python*.dll")):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"PyInstaller runtime dll not found: {internal_dir}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"PyInstaller runtime dll not found: {internal_dir}",
+        )
     if platform != "windows" and not any(internal_dir.iterdir()):
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"PyInstaller runtime files not found: {internal_dir}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            f"PyInstaller runtime files not found: {internal_dir}",
+        )
 
 
 def _resolve_release_executable(
@@ -481,7 +507,11 @@ def _resolve_release_executable(
         bundle_dir / f"{product_name}Gui{suffix}",
         bundle_dir / f"{product_name}{suffix}",
     ]
-    return _first_existing(candidates, _entry_fallbacks(bundle_dir, "Gui", suffix), f"release executable not found in {bundle_dir}")
+    return _first_existing(
+        candidates,
+        _entry_fallbacks(bundle_dir, "Gui", suffix),
+        f"release executable not found in {bundle_dir}",
+    )
 
 
 def _resolve_launcher_executable(
@@ -508,18 +538,32 @@ def _resolve_launcher_executable(
         bundle_dir / f"{product_name}.app" if platform == "macos" else None,
         bundle_dir / f"{product_name}Launcher{suffix}",
     ]
-    return _first_existing(candidates, _entry_fallbacks(bundle_dir, "Launcher", suffix), f"launcher executable not found in {bundle_dir}")
+    return _first_existing(
+        candidates,
+        _entry_fallbacks(bundle_dir, "Launcher", suffix),
+        f"launcher executable not found in {bundle_dir}",
+    )
 
 
 def _entry_fallbacks(bundle_dir: Path, marker: str, suffix: str) -> list[Path]:
     """生成入口候选兜底列表。"""
-    candidates = sorted(path for path in bundle_dir.glob(f"*{marker}{suffix}") if _is_entry_path(path))
+    candidates = sorted(
+        path for path in bundle_dir.glob(f"*{marker}{suffix}") if _is_entry_path(path)
+    )
     if suffix == "":
-        candidates.extend(sorted(path for path in bundle_dir.glob(f"*{marker}.app") if _is_entry_path(path)))
+        candidates.extend(
+            sorted(
+                path
+                for path in bundle_dir.glob(f"*{marker}.app")
+                if _is_entry_path(path)
+            )
+        )
     return candidates
 
 
-def _first_existing(candidates: list[Path | None], fallback: object, message: str) -> Path:
+def _first_existing(
+    candidates: list[Path | None], fallback: object, message: str
+) -> Path:
     """获取第一个存在的候选文件。
 
     :param candidates: 固定候选路径。
@@ -555,7 +599,9 @@ def _is_macos_app_bundle(path: Path) -> bool:
     if not path.is_dir() or path.suffix != ".app":
         return False
     macos_dir = path / "Contents" / "MacOS"
-    return macos_dir.is_dir() and any(candidate.is_file() for candidate in macos_dir.iterdir())
+    return macos_dir.is_dir() and any(
+        candidate.is_file() for candidate in macos_dir.iterdir()
+    )
 
 
 def _runtime_entry_script(entry_module: str) -> str:
@@ -563,7 +609,7 @@ def _runtime_entry_script(entry_module: str) -> str:
     return (
         f"from {entry_module} import main\n\n"
         "\n"
-        "if __name__ == \"__main__\":\n"
+        'if __name__ == "__main__":\n'
         "    raise SystemExit(main())\n"
     )
 
@@ -578,9 +624,13 @@ def _runtime_spec_text(
     console: bool,
 ) -> str:
     """生成 UOT 稳定运行时 PyInstaller spec 文本。"""
-    exe_block = _updater_onefile_exe_block(name=name, console=console) if onefile else _updater_onedir_exe_block(
-        name=name,
-        console=console,
+    exe_block = (
+        _updater_onefile_exe_block(name=name, console=console)
+        if onefile
+        else _updater_onedir_exe_block(
+            name=name,
+            console=console,
+        )
     )
     return f"""# -*- mode: python ; coding: utf-8 -*-
 

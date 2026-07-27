@@ -6,6 +6,12 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.release_identity import (
+    ensure_path_within,
+    normalize_release_version,
+    validate_release_component,
+    validate_release_relative_path,
+)
 
 
 class NasReleaseSource:
@@ -29,7 +35,10 @@ class NasReleaseSource:
         :return: None
         """
         if not self.root.exists() or not self.root.is_dir():
-            raise UpdateError(UpdateErrorCode.NAS_SOURCE_UNAVAILABLE, f"NAS root is not available: {self.root}")
+            raise UpdateError(
+                UpdateErrorCode.NAS_SOURCE_UNAVAILABLE,
+                f"NAS root is not available: {self.root}",
+            )
 
     def manifest_path(self, app_id: str, channel: str, platform: str = "") -> Path:
         """解析通道 manifest 路径。
@@ -39,11 +48,19 @@ class NasReleaseSource:
         :param platform: 可选平台；为空时使用旧版通道路径。
         :return: manifest 路径。
         """
-        if platform:
-            return self.root / app_id / channel / platform / "latest.json"
-        return self.root / app_id / channel / "latest.json"
+        app_id = validate_release_component(app_id, "app_id")
+        channel = validate_release_component(channel, "channel")
+        platform = self._optional_component(platform, "platform")
+        parts = (
+            (app_id, channel, platform, "latest.json")
+            if platform
+            else (app_id, channel, "latest.json")
+        )
+        return self._managed_path(*parts, field_name="manifest path")
 
-    def versions_index_path(self, app_id: str, channel: str, platform: str = "") -> Path:
+    def versions_index_path(
+        self, app_id: str, channel: str, platform: str = ""
+    ) -> Path:
         """解析通道版本索引路径。
 
         :param app_id: 应用标识。
@@ -51,11 +68,19 @@ class NasReleaseSource:
         :param platform: 可选平台；为空时使用旧版通道路径。
         :return: versions.json 路径。
         """
-        if platform:
-            return self.root / app_id / channel / platform / "versions.json"
-        return self.root / app_id / channel / "versions.json"
+        app_id = validate_release_component(app_id, "app_id")
+        channel = validate_release_component(channel, "channel")
+        platform = self._optional_component(platform, "platform")
+        parts = (
+            (app_id, channel, platform, "versions.json")
+            if platform
+            else (app_id, channel, "versions.json")
+        )
+        return self._managed_path(*parts, field_name="versions index path")
 
-    def version_dir(self, app_id: str, version: str, platform: str = "", channel: str = "") -> Path:
+    def version_dir(
+        self, app_id: str, version: str, platform: str = "", channel: str = ""
+    ) -> Path:
         """解析版本目录。
 
         :param app_id: 应用标识。
@@ -64,15 +89,31 @@ class NasReleaseSource:
         :param channel: 可选发布通道；为空时使用旧版全局版本路径。
         :return: 版本目录。
         """
+        app_id = validate_release_component(app_id, "app_id")
+        version = normalize_release_version(version)
+        platform = self._optional_component(platform, "platform")
+        channel = self._optional_component(channel, "channel")
         if channel:
             if platform:
-                return self.root / app_id / channel / f"v{version}" / platform
-            return self.root / app_id / channel / f"v{version}"
+                return self._managed_path(
+                    app_id,
+                    channel,
+                    f"v{version}",
+                    platform,
+                    field_name="version directory",
+                )
+            return self._managed_path(
+                app_id, channel, f"v{version}", field_name="version directory"
+            )
         if platform:
-            return self.root / app_id / f"v{version}" / platform
-        return self.root / app_id / f"v{version}"
+            return self._managed_path(
+                app_id, f"v{version}", platform, field_name="version directory"
+            )
+        return self._managed_path(app_id, f"v{version}", field_name="version directory")
 
-    def version_manifest_path(self, app_id: str, version: str, platform: str = "", channel: str = "") -> Path:
+    def version_manifest_path(
+        self, app_id: str, version: str, platform: str = "", channel: str = ""
+    ) -> Path:
         """解析指定版本 manifest 路径。
 
         :param app_id: 应用标识。
@@ -83,7 +124,9 @@ class NasReleaseSource:
         """
         return self.version_dir(app_id, version, platform, channel) / "latest.json"
 
-    def iter_version_manifest_paths(self, app_id: str, platform: str = "", channel: str = "") -> list[Path]:
+    def iter_version_manifest_paths(
+        self, app_id: str, platform: str = "", channel: str = ""
+    ) -> list[Path]:
         """列出应用历史版本 manifest。
 
         :param app_id: 应用标识。
@@ -91,12 +134,17 @@ class NasReleaseSource:
         :param channel: 可选发布通道；为空时优先扫描旧版全局版本目录。
         :return: 按路径排序的 manifest 列表。
         """
-        app_root = self.root / app_id
+        app_id = validate_release_component(app_id, "app_id")
+        platform = self._optional_component(platform, "platform")
+        channel = self._optional_component(channel, "channel")
+        app_root = self._managed_path(app_id, field_name="application directory")
         if not _safe_path_check(app_root.is_dir):
             return []
         manifest_paths: list[Path] = []
         if channel:
-            channel_paths = self._iter_version_manifests_under(app_root / channel, platform)
+            channel_paths = self._iter_version_manifests_under(
+                app_root / channel, platform
+            )
             manifest_paths.extend(channel_paths)
             channel_versions = self._manifest_version_keys(channel_paths, platform)
             legacy_paths = [
@@ -109,7 +157,14 @@ class NasReleaseSource:
         manifest_paths.extend(self._iter_version_manifests_under(app_root, platform))
         return sorted(manifest_paths)
 
-    def package_path(self, app_id: str, version: str, package_filename: str, platform: str = "", channel: str = "") -> Path:
+    def package_path(
+        self,
+        app_id: str,
+        version: str,
+        package_filename: str,
+        platform: str = "",
+        channel: str = "",
+    ) -> Path:
         """解析发布包路径。
 
         :param app_id: 应用标识。
@@ -119,9 +174,17 @@ class NasReleaseSource:
         :param channel: 可选发布通道；为空时使用旧版全局版本路径。
         :return: 发布包路径。
         """
-        return self.version_dir(app_id, version, platform, channel) / package_filename
+        package_filename = validate_release_component(
+            package_filename, "package_filename", maximum_length=255
+        )
+        version_dir = self.version_dir(app_id, version, platform, channel)
+        return ensure_path_within(
+            version_dir, version_dir / package_filename, "package path"
+        )
 
-    def _iter_version_manifests_under(self, root: Path, platform: str = "") -> list[Path]:
+    def _iter_version_manifests_under(
+        self, root: Path, platform: str = ""
+    ) -> list[Path]:
         """扫描指定根目录下的版本 manifest。
 
         :param root: 应用根或通道根目录。
@@ -138,12 +201,18 @@ class NasReleaseSource:
         for version_dir in version_dirs:
             if not _safe_path_check(version_dir.is_dir):
                 continue
-            candidate = version_dir / platform / "latest.json" if platform else version_dir / "latest.json"
+            candidate = (
+                version_dir / platform / "latest.json"
+                if platform
+                else version_dir / "latest.json"
+            )
             if _safe_path_check(candidate.is_file):
                 manifest_paths.append(candidate)
         return sorted(manifest_paths)
 
-    def _manifest_version_keys(self, manifest_paths: list[Path], platform: str = "") -> set[str]:
+    def _manifest_version_keys(
+        self, manifest_paths: list[Path], platform: str = ""
+    ) -> set[str]:
         """提取 manifest 路径集合中的版本目录名。
 
         :param manifest_paths: manifest 路径列表。
@@ -171,16 +240,37 @@ class NasReleaseSource:
         """
         url = str(package_url or "").strip()
         if not url or url == ".":
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "package.url must be a non-empty relative path")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID,
+                "package.url must be a non-empty relative path",
+            )
         if "\\" in url:
             raise UpdateError(
                 UpdateErrorCode.MANIFEST_INVALID,
                 f"unsafe package url: {package_url}; use a forward-slash relative path, not UNC or Windows path syntax",
             )
-        relative_path = PurePosixPath(url)
-        if relative_path.is_absolute() or ".." in relative_path.parts or any(":" in part for part in relative_path.parts):
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe package url: {package_url}")
-        return self.root.joinpath(*relative_path.parts)
+        normalized_url = validate_release_relative_path(
+            url,
+            "package.url",
+            error_code=UpdateErrorCode.MANIFEST_INVALID,
+        )
+        relative_path = PurePosixPath(normalized_url)
+        return ensure_path_within(
+            self.root,
+            self.root.joinpath(*relative_path.parts),
+            "package.url",
+            error_code=UpdateErrorCode.MANIFEST_INVALID,
+        )
+
+    def _managed_path(self, *parts: str, field_name: str) -> Path:
+        """构造并校验 NAS 根目录内路径。"""
+        return ensure_path_within(self.root, self.root.joinpath(*parts), field_name)
+
+    @staticmethod
+    def _optional_component(value: str, field_name: str) -> str:
+        """验证可选路径段。"""
+        text = str(value or "").strip()
+        return validate_release_component(text, field_name) if text else ""
 
 
 def _safe_path_check(check: Callable[[], bool]) -> bool:

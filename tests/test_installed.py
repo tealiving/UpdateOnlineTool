@@ -8,12 +8,18 @@ from pathlib import Path
 import pytest
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
-from update_online_tool.installed import list_installed_versions, migrate_install_root, switch_installed_version
+from update_online_tool.installed import (
+    list_installed_versions,
+    migrate_install_root,
+    switch_installed_version,
+)
 
 
 def test_list_installed_versions_marks_current(tmp_path: Path) -> None:
     """验证可列出安装根版本并标记当前版本。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
     _write_release_entry(install_root, "1.0.6", "MyTool.exe", "new")
 
@@ -24,9 +30,13 @@ def test_list_installed_versions_marks_current(tmp_path: Path) -> None:
     assert all(item.entry_exists for item in versions)
 
 
-def test_switch_installed_version_updates_current_json_atomically(tmp_path: Path) -> None:
+def test_switch_installed_version_updates_current_json_atomically(
+    tmp_path: Path,
+) -> None:
     """验证切换已安装版本会更新 current.json。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
 
     switched = switch_installed_version(install_root=install_root, version="1.0.4")
@@ -47,7 +57,9 @@ def test_switch_installed_version_updates_current_json_atomically(tmp_path: Path
 
 def test_switch_installed_version_supports_macos_app_bundle(tmp_path: Path) -> None:
     """验证可切换到 macOS .app bundle release。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.app", platform="macos")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.app", platform="macos"
+    )
     _write_macos_app_bundle(install_root / "releases" / "1.0.4" / "MyTool.app", "old")
 
     switched = switch_installed_version(install_root=install_root, version="1.0.4")
@@ -61,9 +73,13 @@ def test_switch_installed_version_supports_macos_app_bundle(tmp_path: Path) -> N
     }
 
 
-def test_switch_installed_version_supports_macos_app_with_different_inner_executable(tmp_path: Path) -> None:
+def test_switch_installed_version_supports_macos_app_with_different_inner_executable(
+    tmp_path: Path,
+) -> None:
     """验证 .app 内部可执行文件名不同于 bundle 名时仍可切换。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.app", platform="macos")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.app", platform="macos"
+    )
     _write_macos_app_bundle(
         install_root / "releases" / "1.0.4" / "MyTool.app",
         "old",
@@ -76,9 +92,13 @@ def test_switch_installed_version_supports_macos_app_with_different_inner_execut
     assert switched.entry_kind == "app_bundle"
 
 
-def test_switch_installed_version_supports_legacy_macos_executable_after_app_bundle(tmp_path: Path) -> None:
+def test_switch_installed_version_supports_legacy_macos_executable_after_app_bundle(
+    tmp_path: Path,
+) -> None:
     """验证 .app 新版本可切回旧裸入口版本。"""
-    install_root = _write_install_root(tmp_path, current_version="1.1.0", entry_name="MyTool.app", platform="macos")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.1.0", entry_name="MyTool.app", platform="macos"
+    )
     _write_release_entry(install_root, "1.0.8", "MyTool", "legacy")
 
     versions = list_installed_versions(install_root=install_root)
@@ -96,9 +116,35 @@ def test_switch_installed_version_supports_legacy_macos_executable_after_app_bun
     }
 
 
-def test_switch_installed_version_preserves_unknown_current_json_fields(tmp_path: Path) -> None:
+def test_switch_installed_version_canonicalizes_legacy_platform_alias(
+    tmp_path: Path,
+) -> None:
+    """旧 current.json 的平台别名可读取，但切换后必须写回规范值。"""
+    install_root = _write_install_root(
+        tmp_path,
+        current_version="1.0.5",
+        entry_name="MyTool.exe",
+        platform="win32",
+    )
+    _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
+
+    switched = switch_installed_version(
+        install_root=install_root,
+        version="v1.0.4",
+    )
+
+    payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    assert switched.version == "1.0.4"
+    assert payload["entry"]["platform"] == "windows"
+
+
+def test_switch_installed_version_preserves_unknown_current_json_fields(
+    tmp_path: Path,
+) -> None:
     """验证切换版本时保留 current.json 中的扩展字段。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
     current_path = install_root / "current.json"
     payload = json.loads(current_path.read_text(encoding="utf-8"))
@@ -116,7 +162,9 @@ def test_switch_installed_version_preserves_unknown_current_json_fields(tmp_path
 
 def test_switch_installed_version_rejects_missing_release(tmp_path: Path) -> None:
     """验证目标 release 不存在时拒绝切换。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
 
     with pytest.raises(UpdateError) as error:
         switch_installed_version(install_root=install_root, version="1.0.4")
@@ -124,26 +172,59 @@ def test_switch_installed_version_rejects_missing_release(tmp_path: Path) -> Non
     assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
 
 
-def test_list_installed_versions_marks_release_invalid_when_required_resource_is_missing(tmp_path: Path) -> None:
+def test_switch_installed_version_rejects_version_escape_without_current_change(
+    tmp_path: Path,
+) -> None:
+    """本地切换不得读取或切换到 releases 根之外的目录。"""
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
+    outside = tmp_path / "escaped-release"
+    outside.mkdir()
+    (outside / "MyTool.exe").write_text("outside", encoding="utf-8")
+    current_before = (install_root / "current.json").read_bytes()
+
+    with pytest.raises(UpdateError) as error:
+        switch_installed_version(
+            install_root=install_root, version="../../escaped-release"
+        )
+
+    assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
+    assert (install_root / "current.json").read_bytes() == current_before
+
+
+def test_list_installed_versions_marks_release_invalid_when_required_resource_is_missing(
+    tmp_path: Path,
+) -> None:
     """验证版本选择器可以由 UOT 标记缺少宿主资源的历史 release。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
     required_path = "resources/uot/settings.json"
     settings_path = install_root / "releases" / "1.0.5" / required_path
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text("{}", encoding="utf-8")
 
-    versions = list_installed_versions(install_root=install_root, release_required_paths=(required_path,))
+    versions = list_installed_versions(
+        install_root=install_root, release_required_paths=(required_path,)
+    )
 
-    validity = {item.version: (item.release_valid, item.validation_error) for item in versions}
+    validity = {
+        item.version: (item.release_valid, item.validation_error) for item in versions
+    }
     assert validity["1.0.5"] == (True, "")
     assert validity["1.0.4"][0] is False
     assert "required release path not found" in validity["1.0.4"][1]
 
 
-def test_switch_installed_version_rejects_release_without_required_resource(tmp_path: Path) -> None:
+def test_switch_installed_version_rejects_release_without_required_resource(
+    tmp_path: Path,
+) -> None:
     """验证直接调用 UOT 切换也不能绕过宿主完整性要求。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
 
     with pytest.raises(UpdateError) as error:
@@ -159,7 +240,9 @@ def test_switch_installed_version_rejects_release_without_required_resource(tmp_
 
 def test_switch_installed_version_rejects_existing_update_lock(tmp_path: Path) -> None:
     """验证本地版本切换复用安装根 update.lock。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
     (install_root / "update.lock").write_text('{"pid": 123}\n', encoding="utf-8")
 
@@ -187,10 +270,16 @@ def test_migrate_install_root_copies_flat_install_into_release(tmp_path: Path) -
         platform="windows",
     )
 
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert result.version == "1.0.0"
-    assert (install_root / "releases" / "1.0.0" / "MyTool.exe").read_text(encoding="utf-8") == "app"
-    assert (install_root / "releases" / "1.0.0" / "resources" / "data.txt").read_text(encoding="utf-8") == "data"
+    assert (install_root / "releases" / "1.0.0" / "MyTool.exe").read_text(
+        encoding="utf-8"
+    ) == "app"
+    assert (install_root / "releases" / "1.0.0" / "resources" / "data.txt").read_text(
+        encoding="utf-8"
+    ) == "data"
     assert not (install_root / "releases" / "1.0.0" / "update-result.json").exists()
     assert current_payload["app_id"] == "my-tool"
     assert current_payload["version"] == "1.0.0"
@@ -217,7 +306,9 @@ def test_migrate_install_root_dry_run_does_not_write(tmp_path: Path) -> None:
     assert not (install_root / "releases").exists()
 
 
-def test_migrate_install_root_rejects_existing_release_without_force(tmp_path: Path) -> None:
+def test_migrate_install_root_rejects_existing_release_without_force(
+    tmp_path: Path,
+) -> None:
     """验证目标 release 已存在时默认拒绝覆盖。"""
     install_root = tmp_path / "legacy"
     install_root.mkdir()
@@ -256,11 +347,15 @@ def _write_install_root(
             "platform": platform,
         },
     }
-    (install_root / "current.json").write_text(json.dumps(current_payload), encoding="utf-8")
+    (install_root / "current.json").write_text(
+        json.dumps(current_payload), encoding="utf-8"
+    )
     return install_root
 
 
-def _write_release_entry(install_root: Path, version: str, entry_name: str, content: str) -> None:
+def _write_release_entry(
+    install_root: Path, version: str, entry_name: str, content: str
+) -> None:
     """写入 release 入口。"""
     release_dir = install_root / "releases" / version
     release_dir.mkdir(parents=True, exist_ok=True)
@@ -270,7 +365,9 @@ def _write_release_entry(install_root: Path, version: str, entry_name: str, cont
     (release_dir / entry_name).write_text(content, encoding="utf-8")
 
 
-def _write_macos_app_bundle(path: Path, executable_text: str, *, executable_name: str = "") -> None:
+def _write_macos_app_bundle(
+    path: Path, executable_text: str, *, executable_name: str = ""
+) -> None:
     """写入最小 .app bundle。"""
     executable_path = path / "Contents" / "MacOS" / (executable_name or path.stem)
     executable_path.parent.mkdir(parents=True, exist_ok=True)

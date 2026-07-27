@@ -18,7 +18,30 @@ def test_nas_resolves_manifest_path(tmp_path: Path) -> None:
     """
     source = NasReleaseSource(tmp_path)
 
-    assert source.manifest_path("demo-app", "stable") == tmp_path / "demo-app" / "stable" / "latest.json"
+    assert (
+        source.manifest_path("demo-app", "stable")
+        == tmp_path / "demo-app" / "stable" / "latest.json"
+    )
+
+
+@pytest.mark.parametrize(
+    "resolve_path",
+    [
+        lambda source: source.manifest_path("../escaped", "stable"),
+        lambda source: source.package_path("demo", "../../escaped", "package.zip"),
+        lambda source: source.package_path("demo", "1.0.0", "../package.zip"),
+    ],
+)
+def test_nas_public_path_builders_reject_root_escape(
+    tmp_path: Path, resolve_path
+) -> None:
+    """SDK 直接调用 NAS path builder 也不得绕过 CLI 校验。"""
+    source = NasReleaseSource(tmp_path)
+
+    with pytest.raises(UpdateError) as error:
+        resolve_path(source)
+
+    assert error.value.code is UpdateErrorCode.SETTINGS_INVALID
 
 
 def test_nas_resolves_channel_platform_version_manifest_path(tmp_path: Path) -> None:
@@ -52,7 +75,10 @@ def test_nas_iterates_channel_version_manifest_paths(tmp_path: Path) -> None:
     second.write_text("{}", encoding="utf-8")
     ignored.write_text("{}", encoding="utf-8")
 
-    assert source.iter_version_manifest_paths("demo-app", channel="stable") == [first, second]
+    assert source.iter_version_manifest_paths("demo-app", channel="stable") == [
+        first,
+        second,
+    ]
 
 
 def test_nas_keeps_legacy_version_manifest_fallback(tmp_path: Path) -> None:
@@ -69,7 +95,9 @@ def test_nas_keeps_legacy_version_manifest_fallback(tmp_path: Path) -> None:
     assert source.iter_version_manifest_paths("demo-app", channel="stable") == [legacy]
 
 
-def test_nas_merges_channel_and_legacy_versions_without_duplicate(tmp_path: Path) -> None:
+def test_nas_merges_channel_and_legacy_versions_without_duplicate(
+    tmp_path: Path,
+) -> None:
     """验证新旧版本目录共存时同版本优先通道目录。
 
     :param tmp_path: pytest 临时目录。
@@ -88,7 +116,9 @@ def test_nas_merges_channel_and_legacy_versions_without_duplicate(tmp_path: Path
     assert legacy_same not in paths
 
 
-def test_nas_iter_version_manifest_paths_skips_inaccessible_manifest(tmp_path: Path, monkeypatch) -> None:
+def test_nas_iter_version_manifest_paths_skips_inaccessible_manifest(
+    tmp_path: Path, monkeypatch
+) -> None:
     """验证历史版本扫描遇到单个 SMB 探测异常时跳过该 manifest。"""
     source = NasReleaseSource(tmp_path)
     valid = tmp_path / "demo-app" / "stable" / "v1.0.5" / "latest.json"
@@ -109,7 +139,9 @@ def test_nas_iter_version_manifest_paths_skips_inaccessible_manifest(tmp_path: P
     assert source.iter_version_manifest_paths("demo-app", channel="stable") == [valid]
 
 
-def test_nas_iter_version_manifest_paths_treats_glob_failure_as_empty(tmp_path: Path, monkeypatch) -> None:
+def test_nas_iter_version_manifest_paths_treats_glob_failure_as_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
     """验证版本目录 glob 失败时按空列表处理。"""
     source = NasReleaseSource(tmp_path)
     channel_root = tmp_path / "demo-app" / "stable"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -116,7 +117,12 @@ def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) 
     nas_root = tmp_path / "nas"
     key_path = tmp_path / "signature.key"
     key_path.write_text(generate_hmac_key(), encoding="utf-8")
-    _write_manifest(nas_root, version="1.1.0", content=b"package", sign_key=key_path)
+    source_package = _write_manifest(
+        nas_root,
+        version="1.1.0",
+        content=b"package",
+        sign_key=key_path,
+    )
     calls: list[list[str]] = []
     progress_calls: list[tuple[int, int]] = []
     token = CancellationToken()
@@ -145,25 +151,29 @@ def test_desktop_client_installs_remote_version_through_updater(tmp_path: Path) 
     assert pending_payload["restart_executable"] == "MyTool.exe"
     assert pending_payload["signature_key"] == str(key_path)
     assert pending_payload["wait_timeout"] == 12.5
-    assert Path(pending_payload["package_path"]).read_bytes() == b"package"
-    assert progress_calls[-1] == (len(b"package"), len(b"package"))
-    assert calls == [
-        [
-            str(updater),
-            "apply",
-            "--pending",
-            str(client.pending_path()),
-            "--restart",
-            "--force",
-            "--signature-key",
-            str(key_path),
-            "--entry-name",
-            "MyTool.exe",
-            "--wait-pid",
-            "123",
-            "--wait-timeout",
-            "12.5",
-        ]
+    assert (
+        Path(pending_payload["package_path"]).read_bytes()
+        == source_package.read_bytes()
+    )
+    assert progress_calls[-1] == (
+        source_package.stat().st_size,
+        source_package.stat().st_size,
+    )
+    assert Path(calls[0][0]).name == updater.name
+    assert calls[0][1:] == [
+        "apply",
+        "--pending",
+        str(client.pending_path()),
+        "--restart",
+        "--force",
+        "--signature-key",
+        str(key_path),
+        "--entry-name",
+        "MyTool.exe",
+        "--wait-pid",
+        "123",
+        "--wait-timeout",
+        "12.5",
     ]
 
 
@@ -185,27 +195,26 @@ def test_desktop_client_can_prepare_before_starting_updater(tmp_path: Path) -> N
     prepared = client.prepare_remote_version("1.1.0", old_pid=123, restart=True)
 
     assert prepared.version == "1.1.0"
-    assert prepared.package_path.read_bytes() == b"package"
+    with zipfile.ZipFile(prepared.package_path) as archive:
+        assert archive.read("payload.bin") == b"package"
     assert prepared.pending_manifest_path == client.pending_path()
     assert calls == []
 
     result = client.launch_pending_update()
 
     assert result.started is True
-    assert calls == [
-        [
-            str(updater),
-            "apply",
-            "--pending",
-            str(client.pending_path()),
-            "--restart",
-            "--entry-name",
-            "MyTool.exe",
-            "--wait-pid",
-            "123",
-            "--wait-timeout",
-            "60.0",
-        ]
+    assert Path(calls[0][0]).name == updater.name
+    assert calls[0][1:] == [
+        "apply",
+        "--pending",
+        str(client.pending_path()),
+        "--restart",
+        "--entry-name",
+        "MyTool.exe",
+        "--wait-pid",
+        "123",
+        "--wait-timeout",
+        "60.0",
     ]
 
 
@@ -223,7 +232,8 @@ def test_desktop_client_prepares_for_agent_handoff_without_updater(
     prepared = client.prepare_remote_version("1.1.0", old_pid=123, restart=True)
 
     assert prepared.version == "1.1.0"
-    assert prepared.package_path.read_bytes() == b"package"
+    with zipfile.ZipFile(prepared.package_path) as archive:
+        assert archive.read("payload.bin") == b"package"
     assert prepared.pending_manifest_path == client.pending_path()
     assert client.pending_path().is_file()
     with pytest.raises(UpdateError) as error:
@@ -412,7 +422,7 @@ def test_desktop_client_prewarm_rejects_nonzero_updater_exit(tmp_path: Path) -> 
     """updater 无法加载运行时时，预热必须返回结构化失败。
 
     :param tmp_path: pytest 临时目录。
-    :return: None。
+    :return: 测试 ZIP 路径。
     """
 
     install_root = _write_install_root(tmp_path, version="1.0.0")
@@ -588,21 +598,23 @@ def _write_manifest(
     version: str,
     content: bytes = b"release",
     sign_key: Path | None = None,
-) -> None:
+) -> Path:
     """写入测试 NAS manifest 和包。
 
     :param root: 测试 NAS 根目录。
     :param version: 版本号。
     :param content: 包体内容。
     :param sign_key: 可选签名密钥。
-    :return: None。
+    :return: 测试 ZIP 路径。
     """
     version_dir = root / "my-tool" / "stable" / f"v{version}"
     channel_dir = root / "my-tool" / "stable"
     package = version_dir / "package.zip"
     package.parent.mkdir(parents=True)
     channel_dir.mkdir(parents=True, exist_ok=True)
-    package.write_bytes(content)
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("payload.bin", content)
+    package_bytes = package.read_bytes()
     payload = {
         "schema_version": 2,
         "app_id": "my-tool",
@@ -614,8 +626,8 @@ def _write_manifest(
         "notes": "release",
         "package": {
             "url": f"my-tool/stable/v{version}/package.zip",
-            "size": len(content),
-            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(package_bytes),
+            "sha256": hashlib.sha256(package_bytes).hexdigest(),
         },
     }
     if sign_key is not None:
@@ -624,6 +636,7 @@ def _write_manifest(
         )
     (channel_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
     (version_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    return package
 
 
 def _popen_recorder(calls: list[list[str]]):

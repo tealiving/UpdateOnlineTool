@@ -10,6 +10,7 @@ use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, Command};
+use unicode_normalization::UnicodeNormalization;
 
 const MANIFEST_INVALID: &str = "MANIFEST_INVALID";
 const MANIFEST_NOT_FOUND: &str = "MANIFEST_NOT_FOUND";
@@ -198,11 +199,17 @@ fn read_current_release(install_root: &Path) -> Result<CurrentRelease, UotError>
 }
 
 fn checked_relative(value: &str, field_name: &str) -> Result<PathBuf, UotError> {
-    let value = value.trim();
-    let path = Path::new(value);
-    if value.is_empty()
-        || value.contains('\\')
-        || value
+    if value != value.trim() {
+        return Err(UotError::new(
+            SETTINGS_INVALID,
+            format!("{field_name} must not start or end with whitespace"),
+        ));
+    }
+    let normalized = value.nfc().collect::<String>();
+    let path = Path::new(&normalized);
+    if normalized.is_empty()
+        || normalized.contains('\\')
+        || normalized
             .split('/')
             .any(|component| matches!(component, "." | ".."))
         || path.is_absolute()
@@ -221,7 +228,87 @@ fn checked_relative(value: &str, field_name: &str) -> Result<PathBuf, UotError> 
             format!("{field_name} must be a forward-slash relative path"),
         ));
     }
+    for component in normalized.split('/') {
+        checked_component(component, field_name)?;
+    }
     Ok(path.to_path_buf())
+}
+
+fn checked_component(value: &str, field_name: &str) -> Result<(), UotError> {
+    let invalid_character = value.chars().any(|character| {
+        character.is_control() || matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+    });
+    let reserved_stem = value
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved_name = matches!(
+        reserved_stem.as_str(),
+        "CON"
+            | "CONIN$"
+            | "CONOUT$"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
+    );
+    if value.is_empty()
+        || value.len() > 255
+        || value != value.trim()
+        || value.ends_with([' ', '.'])
+        || invalid_character
+        || reserved_name
+    {
+        return Err(UotError::new(
+            SETTINGS_INVALID,
+            format!("{field_name} contains an unsafe cross-platform path component"),
+        ));
+    }
+    Ok(())
+}
+
+fn checked_version(value: &str) -> Result<&str, UotError> {
+    checked_component(value, "current.json release version")?;
+    let mut characters = value.chars();
+    let first = characters.next();
+    let last = value.chars().next_back();
+    let valid = value.len() <= 128
+        && first.is_some_and(|character| character.is_ascii_alphanumeric())
+        && last.is_some_and(|character| character.is_ascii_alphanumeric())
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '-')
+        });
+    if !valid {
+        return Err(UotError::new(
+            SETTINGS_INVALID,
+            "current.json release version must use the canonical version grammar",
+        ));
+    }
+    Ok(value)
 }
 
 fn checked_release_dir(value: &str) -> Result<PathBuf, UotError> {
@@ -233,8 +320,9 @@ fn checked_release_dir(value: &str) -> Result<PathBuf, UotError> {
             "current.json release_dir must be releases/<version>",
         ));
     };
+    let version = components.next();
     if first != "releases"
-        || !matches!(components.next(), Some(Component::Normal(_)))
+        || !matches!(version, Some(Component::Normal(_)))
         || components.next().is_some()
     {
         return Err(UotError::new(
@@ -242,6 +330,16 @@ fn checked_release_dir(value: &str) -> Result<PathBuf, UotError> {
             "current.json release_dir must be releases/<version>",
         ));
     }
+    let Some(Component::Normal(version)) = version else {
+        unreachable!("version shape was checked above");
+    };
+    let Some(version) = version.to_str() else {
+        return Err(UotError::new(
+            SETTINGS_INVALID,
+            "current.json release version must be valid Unicode",
+        ));
+    };
+    checked_version(version)?;
     Ok(path)
 }
 
@@ -338,9 +436,23 @@ mod tests {
         assert!(checked_relative("Product/./run", "entry").is_err());
         assert!(checked_relative("C:\\\\Product.exe", "entry").is_err());
         assert!(checked_relative("/Applications/Product", "entry").is_err());
+        assert!(checked_relative("资源/CON.txt", "entry").is_err());
+        assert!(checked_relative("资源/CONIN$", "entry").is_err());
+        assert!(checked_relative("资源/COM¹", "entry").is_err());
+        assert!(checked_relative("dir/ file", "entry").is_err());
+        assert!(checked_relative("资源/name. ", "entry").is_err());
+        assert!(checked_relative("资源/file:stream", "entry").is_err());
         assert_eq!(
             checked_relative("Product.app", "entry").expect("relative path"),
             PathBuf::from("Product.app")
+        );
+        assert_eq!(
+            checked_relative("资源/应用程序", "entry").expect("Chinese relative path"),
+            PathBuf::from("资源/应用程序")
+        );
+        assert_eq!(
+            checked_relative("资源/e\u{301}.txt", "entry").expect("NFD relative path"),
+            PathBuf::from("资源/é.txt")
         );
     }
 
@@ -350,6 +462,7 @@ mod tests {
         assert!(checked_release_dir("releases").is_err());
         assert!(checked_release_dir("releases/../agent").is_err());
         assert!(checked_release_dir("releases/1.0.0/nested").is_err());
+        assert!(checked_release_dir("releases/版本一").is_err());
         assert_eq!(
             checked_release_dir("releases/1.0.0").expect("versioned release directory"),
             PathBuf::from("releases/1.0.0")

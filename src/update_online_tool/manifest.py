@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
+from update_online_tool.release_identity import (
+    normalize_release_version,
+    validate_release_component,
+    validate_release_platform,
+)
 
 SUPPORTED_SCHEMA_VERSION = 2
 _MANIFEST_KEYS = {
@@ -57,10 +62,16 @@ class UpdatePackageInfo:
         url = _require_text(payload, "url")
         size = payload.get("size")
         if not isinstance(size, int) or size <= 0:
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "package.size must be a positive integer")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID,
+                "package.size must be a positive integer",
+            )
         sha256 = _require_text(payload, "sha256").lower()
         if not _SHA256_RE.match(sha256):
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "package.sha256 must be 64 hex characters")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID,
+                "package.sha256 must be 64 hex characters",
+            )
         return cls(url=url, size=size, sha256=sha256)
 
     def to_payload(self) -> dict[str, object]:
@@ -152,31 +163,58 @@ class UpdateManifest:
         _reject_extra_keys(payload, allowed_keys=_MANIFEST_KEYS, context="manifest")
         schema_version = payload.get("schema_version")
         if schema_version != SUPPORTED_SCHEMA_VERSION:
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "schema_version must be 2")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID, "schema_version must be 2"
+            )
         mandatory = payload.get("mandatory")
         if not isinstance(mandatory, bool):
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "mandatory must be a boolean")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID, "mandatory must be a boolean"
+            )
         package_payload = payload.get("package")
         if not isinstance(package_payload, dict):
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "package must be an object")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID, "package must be an object"
+            )
         signature_payload = payload.get("signature")
         if signature_payload is not None and not isinstance(signature_payload, dict):
-            raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "signature must be an object")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID, "signature must be an object"
+            )
         return cls(
             schema_version=schema_version,
-            app_id=_require_text(payload, "app_id"),
-            channel=_require_text(payload, "channel"),
-            version=_require_text(payload, "version"),
+            app_id=validate_release_component(
+                _require_text(payload, "app_id"),
+                "app_id",
+                error_code=UpdateErrorCode.MANIFEST_INVALID,
+            ),
+            channel=validate_release_component(
+                _require_text(payload, "channel"),
+                "channel",
+                error_code=UpdateErrorCode.MANIFEST_INVALID,
+            ),
+            version=normalize_release_version(
+                _require_text(payload, "version"),
+                error_code=UpdateErrorCode.MANIFEST_INVALID,
+            ),
             mandatory=mandatory,
             min_supported_version=_require_text(payload, "min_supported_version"),
             published_at=_require_text(payload, "published_at"),
             notes=_require_text(payload, "notes"),
             package=UpdatePackageInfo.from_payload(package_payload),
-            platform=_optional_text(payload, "platform"),
+            platform=validate_release_platform(
+                _optional_text(payload, "platform"),
+                error_code=UpdateErrorCode.MANIFEST_INVALID,
+                allow_empty=True,
+            ),
             allow_downgrade=_optional_bool(payload, "allow_downgrade", default=False),
             hidden=_optional_bool(payload, "hidden", default=False),
-            requires_confirmation=_optional_bool(payload, "requires_confirmation", default=False),
-            rollout_percent=_optional_int_range(payload, "rollout_percent", default=100, minimum=0, maximum=100),
+            requires_confirmation=_optional_bool(
+                payload, "requires_confirmation", default=False
+            ),
+            rollout_percent=_optional_int_range(
+                payload, "rollout_percent", default=100, minimum=0, maximum=100
+            ),
             data_schema_version=_optional_int_range(
                 payload,
                 "data_schema_version",
@@ -184,7 +222,9 @@ class UpdateManifest:
                 minimum=0,
                 maximum=1_000_000,
             ),
-            signature=ManifestSignature.from_payload(signature_payload) if signature_payload else None,
+            signature=ManifestSignature.from_payload(signature_payload)
+            if signature_payload
+            else None,
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -220,7 +260,9 @@ class UpdateManifest:
         return payload
 
 
-def _reject_extra_keys(payload: dict[str, Any], *, allowed_keys: set[str], context: str) -> None:
+def _reject_extra_keys(
+    payload: dict[str, Any], *, allowed_keys: set[str], context: str
+) -> None:
     """拒绝契约之外的字段。
 
     :param payload: 待检查字典。
@@ -245,8 +287,20 @@ def _require_text(payload: dict[str, Any], key: str) -> str:
     """
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string"
+        )
     return value.strip()
+
+
+def _validate_optional_component(payload: dict[str, Any], key: str) -> str:
+    """读取可选的跨平台安全路径段。"""
+    value = _optional_text(payload, key)
+    if not value:
+        return ""
+    return validate_release_component(
+        value, key, error_code=UpdateErrorCode.MANIFEST_INVALID
+    )
 
 
 def _optional_text(payload: dict[str, Any], key: str) -> str:
@@ -260,7 +314,9 @@ def _optional_text(payload: dict[str, Any], key: str) -> str:
     if value is None:
         return ""
     if not isinstance(value, str) or not value.strip():
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string"
+        )
     return value.strip()
 
 
@@ -286,7 +342,12 @@ def _optional_int_range(
     value = payload.get(key)
     if value is None:
         return default
-    if not isinstance(value, int) or isinstance(value, bool) or value < minimum or value > maximum:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < minimum
+        or value > maximum
+    ):
         raise UpdateError(
             UpdateErrorCode.MANIFEST_INVALID,
             f"{key} must be an integer between {minimum} and {maximum}",

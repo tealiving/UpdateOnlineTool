@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import update_online_tool.cli as cli
 from update_online_tool.cli import main
 from update_online_tool.settings import user_settings_path
 from update_online_tool.signature import load_hmac_key, sign_manifest_payload
@@ -37,6 +38,13 @@ def _settings(path: Path, nas_root: Path) -> None:
     )
 
 
+def _write_test_package(path: Path, content: bytes = b"release") -> Path:
+    """写入可通过 release package plan 的最小 ZIP。"""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("payload.bin", content)
+    return path
+
+
 def test_cli_publish_writes_package_and_latest_json(tmp_path: Path) -> None:
     """验证 publish 写入 NAS 包和 manifest。
 
@@ -46,7 +54,7 @@ def test_cli_publish_writes_package_and_latest_json(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     _settings(settings_path, nas_root)
 
     exit_code = main(
@@ -69,21 +77,314 @@ def test_cli_publish_writes_package_and_latest_json(tmp_path: Path) -> None:
     payload = json.loads(latest.read_text(encoding="utf-8"))
     index_payload = json.loads(versions_index.read_text(encoding="utf-8"))
     assert exit_code == 0
-    assert copied.read_bytes() == b"release"
-    assert payload["package"]["sha256"] == hashlib.sha256(b"release").hexdigest()
+    assert copied.read_bytes() == package.read_bytes()
+    assert (
+        payload["package"]["sha256"] == hashlib.sha256(package.read_bytes()).hexdigest()
+    )
     assert index_payload["versions"][0]["version"] == "1.0.6"
-    assert index_payload["versions"][0]["manifest_url"] == "automation-manual-studio/stable/v1.0.6/latest.json"
+    assert (
+        index_payload["versions"][0]["manifest_url"]
+        == "automation-manual-studio/stable/v1.0.6/latest.json"
+    )
     assert not list(nas_root.rglob("*.tmp"))
-    assert not (nas_root / "automation-manual-studio" / "stable" / "publish.lock").exists()
+    assert not (
+        nas_root / "automation-manual-studio" / "stable" / "publish.lock"
+    ).exists()
 
 
-def test_cli_publish_rejects_release_contract_with_different_version(tmp_path: Path) -> None:
+def test_cli_publish_rejects_app_id_that_escapes_nas_root(tmp_path: Path) -> None:
+    """发布标识不得把制品写到 NAS 根目录之外。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    _write_test_package(package)
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "../escaped-app",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (tmp_path / "escaped-app").exists()
+    assert not nas_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("--channel", "../escaped-channel"), ("--version", "../../escaped-version")],
+)
+def test_cli_publish_rejects_unsafe_release_identity_before_writing(
+    tmp_path: Path,
+    option: str,
+    value: str,
+) -> None:
+    """发布通道和版本不得改变 NAS 目录层级。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    _write_test_package(package)
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "demo",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+            option,
+            value,
+        ]
+    )
+
+    assert exit_code == 1
+    assert not nas_root.exists()
+
+
+def test_cli_publish_rejects_unsafe_package_filename_before_writing(
+    tmp_path: Path,
+) -> None:
+    """settings 中的包文件名不得逃出版本目录。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    _write_test_package(package)
+    _settings(settings_path, nas_root)
+    payload = json.loads(settings_path.read_text(encoding="utf-8"))
+    payload["publish"]["package_filename"] = "../escaped.zip"
+    settings_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "demo",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not nas_root.exists()
+
+
+def test_cli_publish_accepts_chinese_release_identity(tmp_path: Path) -> None:
+    """中文应用与通道名称应保持可发布。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    _write_test_package(package)
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "自动化手册",
+            "--channel",
+            "稳定版",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+        ]
+    )
+
+    assert exit_code == 0
+    assert (nas_root / "自动化手册" / "稳定版" / "v1.0.6" / "package.zip").is_file()
+
+
+def test_cli_publish_rejects_invalid_package_layout_before_nas_write(
+    tmp_path: Path,
+) -> None:
+    """第三方 ZIP 也必须在 publish 写 NAS 前通过统一 package plan。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = tmp_path / "app.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("CON.txt", "invalid")
+    _settings(settings_path, nas_root)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "demo",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not nas_root.exists()
+
+
+def test_cli_publish_revalidates_the_copied_bytes_before_atomic_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """源包在预检后被替换时，NAS 临时副本必须再次校验且不能提升为正式包。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = _write_test_package(tmp_path / "app.zip")
+    _settings(settings_path, nas_root)
+    original_copy = cli._copy_file_atomic
+
+    def replace_source_then_copy(
+        source_path: Path, target_path: Path, **kwargs: object
+    ) -> None:
+        with zipfile.ZipFile(source_path, "w") as archive:
+            archive.writestr("Config.json", "first")
+            archive.writestr("config.json", "second")
+        original_copy(source_path, target_path, **kwargs)
+
+    monkeypatch.setattr(cli, "_copy_file_atomic", replace_source_then_copy)
+
+    exit_code = main(
+        [
+            "publish",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "demo",
+            "--version",
+            "1.0.6",
+            "--package",
+            str(package),
+        ]
+    )
+
+    version_dir = nas_root / "demo" / "stable" / "v1.0.6"
+    assert exit_code == 1
+    assert not (version_dir / "package.zip").exists()
+    assert not (version_dir / "latest.json").exists()
+    assert not list(nas_root.rglob("*.tmp"))
+
+
+def test_cli_publish_restores_previous_version_when_manifest_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重复发布失败时，旧 package 与 manifest 必须保持一致。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    first_package = _write_test_package(tmp_path / "first.zip")
+    _settings(settings_path, nas_root)
+    command = [
+        "publish",
+        "--settings",
+        str(settings_path),
+        "--app",
+        "demo",
+        "--version",
+        "1.0.6",
+        "--package",
+        str(first_package),
+    ]
+    assert main(command) == 0
+    version_dir = nas_root / "demo" / "stable" / "v1.0.6"
+    published_package = version_dir / "package.zip"
+    version_manifest = version_dir / "latest.json"
+    channel_manifest = nas_root / "demo" / "stable" / "latest.json"
+    versions_index = nas_root / "demo" / "stable" / "versions.json"
+    old_package = published_package.read_bytes()
+    old_manifest = version_manifest.read_bytes()
+    old_channel_manifest = channel_manifest.read_bytes()
+    old_versions_index = versions_index.read_bytes()
+    replacement = tmp_path / "replacement.zip"
+    with zipfile.ZipFile(replacement, "w") as archive:
+        archive.writestr("app.exe", "replacement")
+    real_write_json = cli._write_json
+
+    def fail_versions_index(path: Path, payload: dict[str, object]) -> None:
+        if path == versions_index:
+            raise OSError("fault injection")
+        real_write_json(path, payload)
+
+    monkeypatch.setattr(cli, "_write_json", fail_versions_index)
+
+    assert main([*command[:-1], str(replacement)]) == 1
+    assert published_package.read_bytes() == old_package
+    assert version_manifest.read_bytes() == old_manifest
+    assert channel_manifest.read_bytes() == old_channel_manifest
+    assert versions_index.read_bytes() == old_versions_index
+    assert not list(nas_root.rglob("*.backup"))
+
+
+def test_cli_verify_rejects_hash_valid_package_with_invalid_layout(
+    tmp_path: Path,
+) -> None:
+    """NAS 包 hash 正确也不能绕过可移植布局校验。"""
+    settings_path = tmp_path / "settings.json"
+    nas_root = tmp_path / "nas"
+    package = nas_root / "demo" / "stable" / "v1.0.6" / "package.zip"
+    package.parent.mkdir(parents=True)
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Config.json", "first")
+        archive.writestr("config.json", "second")
+    package_bytes = package.read_bytes()
+    latest = nas_root / "demo" / "stable" / "latest.json"
+    latest.parent.mkdir(parents=True, exist_ok=True)
+    latest.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "app_id": "demo",
+                "channel": "stable",
+                "version": "1.0.6",
+                "mandatory": False,
+                "min_supported_version": "1.0.0",
+                "published_at": "2026-07-27T00:00:00+00:00",
+                "notes": "invalid layout",
+                "package": {
+                    "url": "demo/stable/v1.0.6/package.zip",
+                    "size": len(package_bytes),
+                    "sha256": hashlib.sha256(package_bytes).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _settings(settings_path, nas_root)
+
+    exit_code = main(["verify", "--settings", str(settings_path), "--app", "demo"])
+
+    assert exit_code == 1
+
+
+def test_cli_publish_rejects_release_contract_with_different_version(
+    tmp_path: Path,
+) -> None:
     """验证 NAS manifest 版本不能与已验证构建产物的契约分裂。"""
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     contract = tmp_path / "uot-release.json"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     contract.write_text(
         json.dumps(
             {
@@ -121,7 +422,9 @@ def test_cli_publish_rejects_release_contract_with_different_version(tmp_path: P
     assert not (nas_root / "automation-manual-studio").exists()
 
 
-def test_cli_publish_requires_contract_to_be_inside_release_package(tmp_path: Path) -> None:
+def test_cli_publish_requires_contract_to_be_inside_release_package(
+    tmp_path: Path,
+) -> None:
     """验证带契约发布时，契约必须属于实际上传的 zip。"""
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
@@ -166,7 +469,9 @@ def test_cli_publish_requires_contract_to_be_inside_release_package(tmp_path: Pa
     assert not (nas_root / "automation-manual-studio").exists()
 
 
-def test_cli_publish_accepts_matching_contract_from_release_package(tmp_path: Path) -> None:
+def test_cli_publish_accepts_matching_contract_from_release_package(
+    tmp_path: Path,
+) -> None:
     """验证带契约的 release 包可作为 NAS 发布的版本身份来源。"""
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
@@ -205,10 +510,19 @@ def test_cli_publish_accepts_matching_contract_from_release_package(tmp_path: Pa
     )
 
     assert exit_code == 0
-    assert (nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "windows" / "package.zip").is_file()
+    assert (
+        nas_root
+        / "automation-manual-studio"
+        / "stable"
+        / "v1.0.6"
+        / "windows"
+        / "package.zip"
+    ).is_file()
 
 
-def test_cli_writes_and_validates_framework_release_contract(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_writes_and_validates_framework_release_contract(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证框架构建产物可在发布前写入并校验 UOT 契约。"""
     release_dir = tmp_path / "release"
     executable = release_dir / "Demo.app/Contents/MacOS/Demo"
@@ -253,7 +567,7 @@ def test_cli_publish_rejects_existing_publish_lock(tmp_path: Path) -> None:
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     lock_path = nas_root / "automation-manual-studio" / "stable" / "publish.lock"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     lock_path.parent.mkdir(parents=True)
     lock_path.write_text('{"pid": 1}\n', encoding="utf-8")
     _settings(settings_path, nas_root)
@@ -274,17 +588,23 @@ def test_cli_publish_rejects_existing_publish_lock(tmp_path: Path) -> None:
 
     assert exit_code == 1
     assert lock_path.is_file()
-    assert not (nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip").exists()
+    assert not (
+        nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip"
+    ).exists()
 
 
-def test_cli_publish_can_read_notes_from_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_publish_can_read_notes_from_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 publish 可从文件读取版本说明并输出到历史列表。"""
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     notes_file = tmp_path / "release-notes.md"
-    package.write_bytes(b"release")
-    notes_file.write_text("## 1.0.6\n- fix startup\n- improve update history\n", encoding="utf-8")
+    _write_test_package(package)
+    notes_file.write_text(
+        "## 1.0.6\n- fix startup\n- improve update history\n", encoding="utf-8"
+    )
     _settings(settings_path, nas_root)
 
     assert (
@@ -307,17 +627,37 @@ def test_cli_publish_can_read_notes_from_file(tmp_path: Path, capsys: pytest.Cap
     )
     capsys.readouterr()
 
-    exit_code = main(["list-remote", "--settings", str(settings_path), "--app", "automation-manual-studio"])
+    exit_code = main(
+        [
+            "list-remote",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+        ]
+    )
     payload = json.loads(capsys.readouterr().out)
-    latest = json.loads((nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(encoding="utf-8"))
+    latest = json.loads(
+        (nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
     versions_index = json.loads(
-        (nas_root / "automation-manual-studio" / "stable" / "versions.json").read_text(encoding="utf-8")
+        (nas_root / "automation-manual-studio" / "stable" / "versions.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert exit_code == 0
     assert latest["notes"] == "## 1.0.6\n- fix startup\n- improve update history"
-    assert versions_index["versions"][0]["notes"] == "## 1.0.6\n- fix startup\n- improve update history"
-    assert payload["versions"][0]["notes"] == "## 1.0.6\n- fix startup\n- improve update history"
+    assert (
+        versions_index["versions"][0]["notes"]
+        == "## 1.0.6\n- fix startup\n- improve update history"
+    )
+    assert (
+        payload["versions"][0]["notes"]
+        == "## 1.0.6\n- fix startup\n- improve update history"
+    )
 
 
 def test_cli_publish_missing_notes_file_does_not_copy_package(tmp_path: Path) -> None:
@@ -325,7 +665,7 @@ def test_cli_publish_missing_notes_file_does_not_copy_package(tmp_path: Path) ->
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     _settings(settings_path, nas_root)
 
     exit_code = main(
@@ -345,7 +685,9 @@ def test_cli_publish_missing_notes_file_does_not_copy_package(tmp_path: Path) ->
     )
 
     assert exit_code == 1
-    assert not (nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip").exists()
+    assert not (
+        nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip"
+    ).exists()
 
 
 def test_cli_publish_can_isolate_package_by_platform(tmp_path: Path) -> None:
@@ -357,7 +699,7 @@ def test_cli_publish_can_isolate_package_by_platform(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
-    package.write_bytes(b"macos-release")
+    _write_test_package(package, b"macos-release")
     _settings(settings_path, nas_root)
 
     exit_code = main(
@@ -377,16 +719,31 @@ def test_cli_publish_can_isolate_package_by_platform(tmp_path: Path) -> None:
     )
 
     latest = nas_root / "automation-manual-studio" / "stable" / "macos" / "latest.json"
-    versions_index = nas_root / "automation-manual-studio" / "stable" / "macos" / "versions.json"
-    copied = nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "macos" / "package.zip"
+    versions_index = (
+        nas_root / "automation-manual-studio" / "stable" / "macos" / "versions.json"
+    )
+    copied = (
+        nas_root
+        / "automation-manual-studio"
+        / "stable"
+        / "v1.0.6"
+        / "macos"
+        / "package.zip"
+    )
     payload = json.loads(latest.read_text(encoding="utf-8"))
     index_payload = json.loads(versions_index.read_text(encoding="utf-8"))
     assert exit_code == 0
-    assert copied.read_bytes() == b"macos-release"
+    assert copied.read_bytes() == package.read_bytes()
     assert payload["platform"] == "macos"
-    assert payload["package"]["url"] == "automation-manual-studio/stable/v1.0.6/macos/package.zip"
+    assert (
+        payload["package"]["url"]
+        == "automation-manual-studio/stable/v1.0.6/macos/package.zip"
+    )
     assert index_payload["platform"] == "macos"
-    assert index_payload["versions"][0]["manifest_url"] == "automation-manual-studio/stable/v1.0.6/macos/latest.json"
+    assert (
+        index_payload["versions"][0]["manifest_url"]
+        == "automation-manual-studio/stable/v1.0.6/macos/latest.json"
+    )
 
 
 def test_cli_publish_can_store_same_version_remotely_by_channel(tmp_path: Path) -> None:
@@ -399,8 +756,8 @@ def test_cli_publish_can_store_same_version_remotely_by_channel(tmp_path: Path) 
     nas_root = tmp_path / "nas"
     test_package = tmp_path / "test.zip"
     stable_package = tmp_path / "stable.zip"
-    test_package.write_bytes(b"test-release")
-    stable_package.write_bytes(b"stable-release")
+    _write_test_package(test_package, b"test-release")
+    _write_test_package(stable_package, b"stable-release")
     _settings(settings_path, nas_root)
 
     assert (
@@ -440,16 +797,32 @@ def test_cli_publish_can_store_same_version_remotely_by_channel(tmp_path: Path) 
         == 0
     )
 
-    test_copied = nas_root / "automation-manual-studio" / "test" / "v1.0.6" / "package.zip"
-    stable_copied = nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip"
-    test_latest = json.loads((nas_root / "automation-manual-studio" / "test" / "latest.json").read_text(encoding="utf-8"))
-    stable_latest = json.loads(
-        (nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(encoding="utf-8")
+    test_copied = (
+        nas_root / "automation-manual-studio" / "test" / "v1.0.6" / "package.zip"
     )
-    assert test_copied.read_bytes() == b"test-release"
-    assert stable_copied.read_bytes() == b"stable-release"
-    assert test_latest["package"]["url"] == "automation-manual-studio/test/v1.0.6/package.zip"
-    assert stable_latest["package"]["url"] == "automation-manual-studio/stable/v1.0.6/package.zip"
+    stable_copied = (
+        nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "package.zip"
+    )
+    test_latest = json.loads(
+        (nas_root / "automation-manual-studio" / "test" / "latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    stable_latest = json.loads(
+        (nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert test_copied.read_bytes() == test_package.read_bytes()
+    assert stable_copied.read_bytes() == stable_package.read_bytes()
+    assert (
+        test_latest["package"]["url"]
+        == "automation-manual-studio/test/v1.0.6/package.zip"
+    )
+    assert (
+        stable_latest["package"]["url"]
+        == "automation-manual-studio/stable/v1.0.6/package.zip"
+    )
 
 
 def test_cli_publish_writes_version_policy_and_list_remote_filters_hidden(
@@ -461,8 +834,8 @@ def test_cli_publish_writes_version_policy_and_list_remote_filters_hidden(
     nas_root = tmp_path / "nas"
     visible_package = tmp_path / "visible.zip"
     hidden_package = tmp_path / "hidden.zip"
-    visible_package.write_bytes(b"visible")
-    hidden_package.write_bytes(b"hidden")
+    _write_test_package(visible_package, b"visible")
+    _write_test_package(hidden_package, b"hidden")
     _settings(settings_path, nas_root)
     assert (
         main(
@@ -505,25 +878,43 @@ def test_cli_publish_writes_version_policy_and_list_remote_filters_hidden(
     )
     capsys.readouterr()
 
-    assert main(["list-remote", "--settings", str(settings_path), "--app", "automation-manual-studio"]) == 0
+    assert (
+        main(
+            [
+                "list-remote",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+            ]
+        )
+        == 0
+    )
     visible_payload = json.loads(capsys.readouterr().out)
-    assert main(
-        [
-            "list-remote",
-            "--settings",
-            str(settings_path),
-            "--app",
-            "automation-manual-studio",
-            "--include-hidden",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "list-remote",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--include-hidden",
+            ]
+        )
+        == 0
+    )
     all_payload = json.loads(capsys.readouterr().out)
 
     latest_payload = json.loads(
-        (nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(encoding="utf-8")
+        (nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text(
+            encoding="utf-8"
+        )
     )
     index_payload = json.loads(
-        (nas_root / "automation-manual-studio" / "stable" / "versions.json").read_text(encoding="utf-8")
+        (nas_root / "automation-manual-studio" / "stable" / "versions.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert [item["version"] for item in visible_payload["versions"]] == ["1.0.5"]
     assert [item["version"] for item in all_payload["versions"]] == ["1.0.6", "1.0.5"]
@@ -537,16 +928,29 @@ def test_cli_publish_writes_version_policy_and_list_remote_filters_hidden(
     assert index_payload["versions"][0]["hidden"] is True
 
 
-def test_cli_keygen_publish_and_verify_signed_manifest(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_keygen_publish_and_verify_signed_manifest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 CLI 可生成密钥、签名发布并校验 manifest。"""
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     key_path = tmp_path / "signing.key"
     public_key_path = tmp_path / "signing.pub"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     _settings(settings_path, nas_root)
-    assert main(["keygen", "--output", str(key_path), "--public-output", str(public_key_path)]) == 0
+    assert (
+        main(
+            [
+                "keygen",
+                "--output",
+                str(key_path),
+                "--public-output",
+                str(public_key_path),
+            ]
+        )
+        == 0
+    )
     assert (
         main(
             [
@@ -581,7 +985,9 @@ def test_cli_keygen_publish_and_verify_signed_manifest(tmp_path: Path, capsys: p
         ]
     )
 
-    latest_payload = json.loads((nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text())
+    latest_payload = json.loads(
+        (nas_root / "automation-manual-studio" / "stable" / "latest.json").read_text()
+    )
     assert exit_code == 0
     assert latest_payload["signature"]["algorithm"] == "ed25519"
     assert latest_payload["signature"]["key_id"] == "release"
@@ -593,7 +999,7 @@ def test_cli_verify_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     key_path = tmp_path / "signing.key"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     _settings(settings_path, nas_root)
     assert main(["keygen", "--output", str(key_path)]) == 0
     assert (
@@ -640,7 +1046,7 @@ def test_cli_check_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     key_path = tmp_path / "signing.key"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     _settings(settings_path, nas_root)
     assert main(["keygen", "--output", str(key_path)]) == 0
     assert (
@@ -683,13 +1089,15 @@ def test_cli_check_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
     assert exit_code == 1
 
 
-def test_cli_remote_version_commands_reject_tampered_signed_manifest(tmp_path: Path) -> None:
+def test_cli_remote_version_commands_reject_tampered_signed_manifest(
+    tmp_path: Path,
+) -> None:
     """验证 list/show/prepare 在指定签名公钥时都会拒绝被篡改的历史 manifest。"""
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     key_path = tmp_path / "signing.key"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     _settings(settings_path, nas_root)
     assert main(["keygen", "--output", str(key_path)]) == 0
     assert (
@@ -710,12 +1118,27 @@ def test_cli_remote_version_commands_reject_tampered_signed_manifest(tmp_path: P
         )
         == 0
     )
-    version_manifest_path = nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "latest.json"
+    version_manifest_path = (
+        nas_root / "automation-manual-studio" / "stable" / "v1.0.6" / "latest.json"
+    )
     payload = json.loads(version_manifest_path.read_text(encoding="utf-8"))
     payload["notes"] = "tampered"
     version_manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    assert main(["list-remote", "--settings", str(settings_path), "--app", "automation-manual-studio", "--signature-key", str(key_path)]) == 1
+    assert (
+        main(
+            [
+                "list-remote",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--signature-key",
+                str(key_path),
+            ]
+        )
+        == 1
+    )
     assert (
         main(
             [
@@ -761,7 +1184,7 @@ def test_cli_verify_accepts_published_release(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
-    package.write_bytes(b"release")
+    _write_test_package(package)
     _settings(settings_path, nas_root)
     assert (
         main(
@@ -780,7 +1203,18 @@ def test_cli_verify_accepts_published_release(tmp_path: Path) -> None:
         == 0
     )
 
-    assert main(["verify", "--settings", str(settings_path), "--app", "automation-manual-studio"]) == 0
+    assert (
+        main(
+            [
+                "verify",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+            ]
+        )
+        == 0
+    )
 
 
 def test_cli_verify_and_check_accept_platform_release(tmp_path: Path) -> None:
@@ -792,7 +1226,7 @@ def test_cli_verify_and_check_accept_platform_release(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
-    package.write_bytes(b"macos-release")
+    _write_test_package(package, b"macos-release")
     _settings(settings_path, nas_root)
     assert (
         main(
@@ -845,7 +1279,9 @@ def test_cli_verify_and_check_accept_platform_release(tmp_path: Path) -> None:
     )
 
 
-def test_cli_list_remote_outputs_published_versions(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_list_remote_outputs_published_versions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 list-remote 输出已发布版本列表。
 
     :param tmp_path: pytest 临时目录。
@@ -856,14 +1292,52 @@ def test_cli_list_remote_outputs_published_versions(tmp_path: Path, capsys: pyte
     nas_root = tmp_path / "nas"
     package_old = tmp_path / "old.zip"
     package_new = tmp_path / "new.zip"
-    package_old.write_bytes(b"old")
-    package_new.write_bytes(b"new")
+    _write_test_package(package_old, b"old")
+    _write_test_package(package_new, b"new")
     _settings(settings_path, nas_root)
-    assert main(["publish", "--settings", str(settings_path), "--app", "automation-manual-studio", "--version", "1.0.5", "--package", str(package_old)]) == 0
-    assert main(["publish", "--settings", str(settings_path), "--app", "automation-manual-studio", "--version", "1.0.6", "--package", str(package_new)]) == 0
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.5",
+                "--package",
+                str(package_old),
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.6",
+                "--package",
+                str(package_new),
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
 
-    exit_code = main(["list-remote", "--settings", str(settings_path), "--app", "automation-manual-studio"])
+    exit_code = main(
+        [
+            "list-remote",
+            "--settings",
+            str(settings_path),
+            "--app",
+            "automation-manual-studio",
+        ]
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
@@ -871,7 +1345,9 @@ def test_cli_list_remote_outputs_published_versions(tmp_path: Path, capsys: pyte
     assert all(item["package_exists"] for item in payload["versions"])
 
 
-def test_cli_show_version_outputs_one_manifest(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_show_version_outputs_one_manifest(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 show-version 输出指定版本 manifest。
 
     :param tmp_path: pytest 临时目录。
@@ -881,7 +1357,7 @@ def test_cli_show_version_outputs_one_manifest(tmp_path: Path, capsys: pytest.Ca
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
-    package.write_bytes(b"macos-release")
+    _write_test_package(package, b"macos-release")
     _settings(settings_path, nas_root)
     assert (
         main(
@@ -921,10 +1397,15 @@ def test_cli_show_version_outputs_one_manifest(tmp_path: Path, capsys: pytest.Ca
     assert exit_code == 0
     assert payload["version"] == "1.0.6"
     assert payload["platform"] == "macos"
-    assert payload["package"]["url"] == "automation-manual-studio/stable/v1.0.6/macos/package.zip"
+    assert (
+        payload["package"]["url"]
+        == "automation-manual-studio/stable/v1.0.6/macos/package.zip"
+    )
 
 
-def test_cli_prepare_version_copies_specific_package(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_prepare_version_copies_specific_package(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 prepare-version 可复制并校验指定版本包。
 
     :param tmp_path: pytest 临时目录。
@@ -935,9 +1416,24 @@ def test_cli_prepare_version_copies_specific_package(tmp_path: Path, capsys: pyt
     nas_root = tmp_path / "nas"
     package = tmp_path / "app.zip"
     download_dir = tmp_path / "downloads"
-    package.write_bytes(b"rollback")
+    _write_test_package(package, b"rollback")
     _settings(settings_path, nas_root)
-    assert main(["publish", "--settings", str(settings_path), "--app", "automation-manual-studio", "--version", "1.0.4", "--package", str(package)]) == 0
+    assert (
+        main(
+            [
+                "publish",
+                "--settings",
+                str(settings_path),
+                "--app",
+                "automation-manual-studio",
+                "--version",
+                "1.0.4",
+                "--package",
+                str(package),
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
 
     exit_code = main(
@@ -959,7 +1455,7 @@ def test_cli_prepare_version_copies_specific_package(tmp_path: Path, capsys: pyt
     assert payload["version"] == "1.0.4"
     assert payload["verified"] is True
     assert Path(payload["manifest_path"]).is_file()
-    assert Path(payload["package_path"]).read_bytes() == b"rollback"
+    assert Path(payload["package_path"]).read_bytes() == package.read_bytes()
 
 
 def test_cli_prepare_version_outputs_indexed_manifest_path(
@@ -969,11 +1465,17 @@ def test_cli_prepare_version_outputs_indexed_manifest_path(
     """验证 prepare-version 输出 versions.json 实际命中的 manifest 路径。"""
     settings_path = tmp_path / "settings.json"
     nas_root = tmp_path / "nas"
-    payload_bytes = b"indexed"
-    package_path = nas_root / "automation-manual-studio" / "stable" / "custom" / "1.0.8" / "package.zip"
+    package_path = (
+        nas_root
+        / "automation-manual-studio"
+        / "stable"
+        / "custom"
+        / "1.0.8"
+        / "package.zip"
+    )
     manifest_path = package_path.parent / "latest.json"
     package_path.parent.mkdir(parents=True)
-    package_path.write_bytes(payload_bytes)
+    package_bytes = _write_test_package(package_path, b"indexed").read_bytes()
     _settings(settings_path, nas_root)
     manifest_path.write_text(
         json.dumps(
@@ -988,8 +1490,8 @@ def test_cli_prepare_version_outputs_indexed_manifest_path(
                 "notes": "indexed",
                 "package": {
                     "url": "automation-manual-studio/stable/custom/1.0.8/package.zip",
-                    "size": len(payload_bytes),
-                    "sha256": hashlib.sha256(payload_bytes).hexdigest(),
+                    "size": len(package_bytes),
+                    "sha256": hashlib.sha256(package_bytes).hexdigest(),
                 },
             }
         ),
@@ -1029,17 +1531,21 @@ def test_cli_prepare_version_outputs_indexed_manifest_path(
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert Path(payload["manifest_path"]) == manifest_path
-    assert Path(payload["package_path"]).read_bytes() == payload_bytes
+    assert Path(payload["package_path"]).read_bytes() == package_bytes
 
 
-def test_cli_list_installed_outputs_install_root_versions(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_list_installed_outputs_install_root_versions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 list-installed 输出安装根版本列表。
 
     :param tmp_path: pytest 临时目录。
     :param capsys: pytest 输出捕获工具。
     :return: None
     """
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_install_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
 
     exit_code = main(["list-installed", "--install-root", str(install_root)])
@@ -1061,9 +1567,13 @@ def test_cli_list_installed_normalizes_release_dir_install_root(
     :param capsys: pytest 输出捕获工具
     :return: None
     """
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
 
-    exit_code = main(["list-installed", "--install-root", str(install_root / "releases" / "1.0.5")])
+    exit_code = main(
+        ["list-installed", "--install-root", str(install_root / "releases" / "1.0.5")]
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
@@ -1071,27 +1581,37 @@ def test_cli_list_installed_normalizes_release_dir_install_root(
     assert [item["version"] for item in payload["versions"]] == ["1.0.5"]
 
 
-def test_cli_switch_installed_updates_current_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_switch_installed_updates_current_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 switch-installed 可切换 current.json。
 
     :param tmp_path: pytest 临时目录。
     :param capsys: pytest 输出捕获工具。
     :return: None
     """
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_install_release_entry(install_root, "1.0.4", "MyTool.exe", "old")
 
-    exit_code = main(["switch-installed", "--install-root", str(install_root), "--version", "1.0.4"])
+    exit_code = main(
+        ["switch-installed", "--install-root", str(install_root), "--version", "1.0.4"]
+    )
 
     payload = json.loads(capsys.readouterr().out)
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
     assert payload["version"] == "1.0.4"
     assert current_payload["version"] == "1.0.4"
     assert current_payload["entry"]["path"] == "MyTool.exe"
 
 
-def test_cli_migrate_install_root_creates_release_layout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_migrate_install_root_creates_release_layout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 migrate-install-root 可迁移旧安装根。"""
     install_root = tmp_path / "legacy"
     install_root.mkdir()
@@ -1114,7 +1634,9 @@ def test_cli_migrate_install_root_creates_release_layout(tmp_path: Path, capsys:
     )
 
     payload = json.loads(capsys.readouterr().out)
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
     assert payload["version"] == "1.0.0"
     assert payload["copied_items"] == ["MyTool.exe"]
@@ -1122,7 +1644,9 @@ def test_cli_migrate_install_root_creates_release_layout(tmp_path: Path, capsys:
     assert current_payload["entry"]["path"] == "MyTool.exe"
 
 
-def test_cli_write_and_verify_migration_package(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_write_and_verify_migration_package(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 CLI 可生成并校验旧客户端迁移包模板。"""
     package_dir = tmp_path / "migration"
 
@@ -1151,9 +1675,13 @@ def test_cli_write_and_verify_migration_package(tmp_path: Path, capsys: pytest.C
     assert verify_output["valid"] is True
 
 
-def test_cli_install_prepared_updates_current_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_install_prepared_updates_current_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 install-prepared 可安装并切换版本。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     package = _write_runtime_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
     manifest = tmp_path / "latest.json"
     _write_runtime_manifest(manifest, package, version="1.0.6")
@@ -1171,16 +1699,22 @@ def test_cli_install_prepared_updates_current_json(tmp_path: Path, capsys: pytes
     )
 
     payload = json.loads(capsys.readouterr().out)
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
     assert payload["version"] == "1.0.6"
     assert current_payload["version"] == "1.0.6"
     assert current_payload["previous_version"] == "1.0.5"
 
 
-def test_cli_install_prepared_dry_run_does_not_switch(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_install_prepared_dry_run_does_not_switch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 install-prepared --dry-run 不切换安装根状态。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     package = _write_runtime_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
     manifest = tmp_path / "latest.json"
     _write_runtime_manifest(manifest, package, version="1.0.6")
@@ -1199,7 +1733,9 @@ def test_cli_install_prepared_dry_run_does_not_switch(tmp_path: Path, capsys: py
     )
 
     payload = json.loads(capsys.readouterr().out)
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
     assert payload["message"] == "dry-run ok"
     assert current_payload["version"] == "1.0.5"
@@ -1211,14 +1747,18 @@ def test_cli_install_prepared_verifies_manifest_signature(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """验证 install-prepared 可在安装前校验 manifest 签名。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     package = _write_runtime_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
     manifest = tmp_path / "latest.json"
     key_path = tmp_path / "signing.key"
     key_path.write_text("release-secret\n", encoding="utf-8")
     _write_runtime_manifest(manifest, package, version="1.0.6")
     payload = json.loads(manifest.read_text(encoding="utf-8"))
-    signed_payload = sign_manifest_payload(payload, key=load_hmac_key(key_path), key_id="release")
+    signed_payload = sign_manifest_payload(
+        payload, key=load_hmac_key(key_path), key_id="release"
+    )
     manifest.write_text(json.dumps(signed_payload), encoding="utf-8")
 
     exit_code = main(
@@ -1236,31 +1776,54 @@ def test_cli_install_prepared_verifies_manifest_signature(
     )
 
     payload = json.loads(capsys.readouterr().out)
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
     assert payload["version"] == "1.0.6"
     assert current_payload["version"] == "1.0.6"
 
 
-def test_cli_rollback_switches_to_previous_version(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_rollback_switches_to_previous_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 rollback 可回滚到 previous_version。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     _write_install_release_entry(install_root, "1.0.6", "MyTool.exe", "new")
-    assert main(["switch-installed", "--install-root", str(install_root), "--version", "1.0.6"]) == 0
+    assert (
+        main(
+            [
+                "switch-installed",
+                "--install-root",
+                str(install_root),
+                "--version",
+                "1.0.6",
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
 
     exit_code = main(["rollback", "--install-root", str(install_root)])
 
     payload = json.loads(capsys.readouterr().out)
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
     assert payload["version"] == "1.0.5"
     assert current_payload["version"] == "1.0.5"
 
 
-def test_cli_doctor_outputs_report_and_archive(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_doctor_outputs_report_and_archive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 doctor 输出诊断报告并可写入 zip 包。"""
-    install_root = _write_install_root(tmp_path, current_version="1.0.5", entry_name="MyTool.exe")
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.5", entry_name="MyTool.exe"
+    )
     output_path = tmp_path / "doctor.json"
     archive_path = tmp_path / "doctor.zip"
 
@@ -1286,7 +1849,9 @@ def test_cli_doctor_outputs_report_and_archive(tmp_path: Path, capsys: pytest.Ca
     assert archive_path.is_file()
 
 
-def test_cli_write_updater_spec_outputs_generation_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_write_updater_spec_outputs_generation_plan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 write-updater-spec 输出 PyInstaller spec 生成结果。"""
     output_dir = tmp_path / "updater-spec"
 
@@ -1305,7 +1870,9 @@ def test_cli_write_updater_spec_outputs_generation_plan(tmp_path: Path, capsys: 
     assert Path(payload["spec_path"]).is_file()
     assert Path(payload["entry_script"]).is_file()
     assert payload["pyinstaller_command"][-1] == payload["spec_path"]
-    assert "update_online_tool.updater_cli" in Path(payload["entry_script"]).read_text(encoding="utf-8")
+    assert "update_online_tool.updater_cli" in Path(payload["entry_script"]).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_cli_init_writes_project_update_endpoint(tmp_path: Path) -> None:
@@ -1350,7 +1917,9 @@ def test_cli_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
     assert output.read_text(encoding="utf-8") == "{}"
 
 
-def test_cli_init_with_nas_root_writes_project_settings(tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_init_with_nas_root_writes_project_settings(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """验证 init 默认同时写入项目内 NAS settings。
 
     :param tmp_path: pytest 临时目录。
@@ -1407,14 +1976,18 @@ def test_cli_init_normalizes_file_uri_nas_root(tmp_path: Path, monkeypatch) -> N
         ]
     )
 
-    settings_payload = json.loads((project_root / "config" / "settings.json").read_text(encoding="utf-8"))
+    settings_payload = json.loads(
+        (project_root / "config" / "settings.json").read_text(encoding="utf-8")
+    )
     normalized = settings_payload["nas"]["root"].replace("\\", "/")
     assert exit_code == 0
     assert normalized.startswith("//sjnas01/as/JSGCB/技术工程部")
     assert "file:" not in normalized
 
 
-def test_cli_init_can_write_user_settings_when_requested(tmp_path: Path, monkeypatch) -> None:
+def test_cli_init_can_write_user_settings_when_requested(
+    tmp_path: Path, monkeypatch
+) -> None:
     """验证 init 可按需写入用户级 NAS settings。
 
     :param tmp_path: pytest 临时目录。
@@ -1463,11 +2036,16 @@ def test_cli_init_uses_cwd_name_and_default_output(tmp_path: Path, monkeypatch) 
 
     exit_code = main(["init", "--nas-root", str(nas_root)])
 
-    endpoint_payload = json.loads((project_root / "update-endpoint.json").read_text(encoding="utf-8"))
+    endpoint_payload = json.loads(
+        (project_root / "update-endpoint.json").read_text(encoding="utf-8")
+    )
     settings_path = project_root / "config" / "settings.json"
     settings_payload = json.loads(settings_path.read_text(encoding="utf-8"))
     assert exit_code == 0
-    assert endpoint_payload["manifest_sources"][0]["manifest_url"] == "uot-nas://my-tool/stable"
+    assert (
+        endpoint_payload["manifest_sources"][0]["manifest_url"]
+        == "uot-nas://my-tool/stable"
+    )
     assert settings_payload["nas"]["root"] == str(nas_root)
 
 
@@ -1508,7 +2086,9 @@ def test_cli_init_rejects_unavailable_nas_root_without_writing(
     assert not settings_path.exists()
 
 
-def test_cli_assemble_pyinstaller_normalizes_launcher_and_release(tmp_path: Path) -> None:
+def test_cli_assemble_pyinstaller_normalizes_launcher_and_release(
+    tmp_path: Path,
+) -> None:
     """验证 PyInstaller 装配命令生成标准安装目录和升级目录。
 
     :param tmp_path: pytest 临时目录。
@@ -1524,7 +2104,9 @@ def test_cli_assemble_pyinstaller_normalizes_launcher_and_release(tmp_path: Path
     launcher_internal.mkdir(parents=True)
     settings_path.parent.mkdir()
     (release_dir / "AutomationManualStudio.exe").write_text("gui", encoding="utf-8")
-    (launcher_dir / "AutomationManualLauncher.exe").write_text("launcher", encoding="utf-8")
+    (launcher_dir / "AutomationManualLauncher.exe").write_text(
+        "launcher", encoding="utf-8"
+    )
     (release_internal / "python311.dll").write_text("runtime", encoding="utf-8")
     (launcher_internal / "python311.dll").write_text("runtime", encoding="utf-8")
     settings_path.write_text('{"nas":{"root":"D:\\\\Nas"}}', encoding="utf-8")
@@ -1547,10 +2129,16 @@ def test_cli_assemble_pyinstaller_normalizes_launcher_and_release(tmp_path: Path
 
     install_root = dist / "AutomationManualStudio_install_v1.0.5"
     update_root = dist / "AutomationManualStudio_update_v1.0.5"
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
-    assert (install_root / "AutomationManualStudio.exe").read_text(encoding="utf-8") == "launcher"
-    assert (install_root / "releases" / "1.0.5" / "AutomationManualStudio.exe").read_text(encoding="utf-8") == "gui"
+    assert (install_root / "AutomationManualStudio.exe").read_text(
+        encoding="utf-8"
+    ) == "launcher"
+    assert (
+        install_root / "releases" / "1.0.5" / "AutomationManualStudio.exe"
+    ).read_text(encoding="utf-8") == "gui"
     assert current_payload["app_id"] == "automation-manual-studio"
     assert current_payload["version"] == "1.0.5"
     assert current_payload["release_dir"] == "releases/1.0.5"
@@ -1560,9 +2148,15 @@ def test_cli_assemble_pyinstaller_normalizes_launcher_and_release(tmp_path: Path
         "path": "AutomationManualStudio.exe",
         "platform": "windows",
     }
-    assert (install_root / "releases" / "1.0.5" / "_internal" / "config" / "settings.json").is_file()
-    assert (update_root / "AutomationManualStudio.exe").read_text(encoding="utf-8") == "gui"
-    assert (update_root / "_launcher" / "AutomationManualStudio.exe").read_text(encoding="utf-8") == "launcher"
+    assert (
+        install_root / "releases" / "1.0.5" / "_internal" / "config" / "settings.json"
+    ).is_file()
+    assert (update_root / "AutomationManualStudio.exe").read_text(
+        encoding="utf-8"
+    ) == "gui"
+    assert (update_root / "_launcher" / "AutomationManualStudio.exe").read_text(
+        encoding="utf-8"
+    ) == "launcher"
 
 
 def test_cli_assemble_pyinstaller_copies_updater_bundle(tmp_path: Path) -> None:
@@ -1580,8 +2174,12 @@ def test_cli_assemble_pyinstaller_copies_updater_bundle(tmp_path: Path) -> None:
     updater_bundle.mkdir(parents=True)
     (release_dir / "MyTool.exe").write_text("gui", encoding="utf-8")
     (launcher_dir / "MyToolLauncher.exe").write_text("launcher", encoding="utf-8")
-    (release_dir / "_internal" / "python311.dll").write_text("runtime", encoding="utf-8")
-    (launcher_dir / "_internal" / "python311.dll").write_text("runtime", encoding="utf-8")
+    (release_dir / "_internal" / "python311.dll").write_text(
+        "runtime", encoding="utf-8"
+    )
+    (launcher_dir / "_internal" / "python311.dll").write_text(
+        "runtime", encoding="utf-8"
+    )
     (updater_bundle / "MyToolUpdater.exe").write_text("updater", encoding="utf-8")
 
     exit_code = main(
@@ -1601,11 +2199,17 @@ def test_cli_assemble_pyinstaller_copies_updater_bundle(tmp_path: Path) -> None:
     install_root = dist / "MyTool_install_v1.0.5"
     update_root = dist / "MyTool_update_v1.0.5"
     assert exit_code == 0
-    assert (install_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
-    assert (update_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe").read_text(encoding="utf-8") == "updater"
+    assert (install_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe").read_text(
+        encoding="utf-8"
+    ) == "updater"
+    assert (update_root / "updater" / "MyToolUpdater" / "MyToolUpdater.exe").read_text(
+        encoding="utf-8"
+    ) == "updater"
 
 
-def test_cli_assemble_pyinstaller_supports_stable_bootstrap_agent_mode(tmp_path: Path) -> None:
+def test_cli_assemble_pyinstaller_supports_stable_bootstrap_agent_mode(
+    tmp_path: Path,
+) -> None:
     """新模式将 Agent 固定在安装根，升级包不再携带 launcher/updater sidecar。"""
     dist = tmp_path / "dist"
     release_dir = dist / "MyTool_release_v1.0.5"
@@ -1616,8 +2220,12 @@ def test_cli_assemble_pyinstaller_supports_stable_bootstrap_agent_mode(tmp_path:
     agent_bundle.mkdir(parents=True)
     (release_dir / "MyTool.exe").write_text("gui", encoding="utf-8")
     (launcher_dir / "MyToolBootstrap.exe").write_text("bootstrap", encoding="utf-8")
-    (release_dir / "_internal" / "python311.dll").write_text("runtime", encoding="utf-8")
-    (launcher_dir / "_internal" / "python311.dll").write_text("runtime", encoding="utf-8")
+    (release_dir / "_internal" / "python311.dll").write_text(
+        "runtime", encoding="utf-8"
+    )
+    (launcher_dir / "_internal" / "python311.dll").write_text(
+        "runtime", encoding="utf-8"
+    )
     (agent_bundle / "uot-agent.exe").write_text("agent", encoding="utf-8")
 
     exit_code = main(
@@ -1640,8 +2248,12 @@ def test_cli_assemble_pyinstaller_supports_stable_bootstrap_agent_mode(tmp_path:
     install_root = dist / "MyTool_install_v1.0.5"
     update_root = dist / "MyTool_update_v1.0.5"
     assert exit_code == 0
-    assert (install_root / "MyToolBootstrap.exe").read_text(encoding="utf-8") == "bootstrap"
-    assert (install_root / "agent" / "MyToolAgent" / "uot-agent.exe").read_text(encoding="utf-8") == "agent"
+    assert (install_root / "MyToolBootstrap.exe").read_text(
+        encoding="utf-8"
+    ) == "bootstrap"
+    assert (install_root / "agent" / "MyToolAgent" / "uot-agent.exe").read_text(
+        encoding="utf-8"
+    ) == "agent"
     assert (update_root / "MyTool.exe").read_text(encoding="utf-8") == "gui"
     assert not (update_root / "_launcher").exists()
     assert not (update_root / "updater").exists()
@@ -1652,15 +2264,27 @@ def test_cli_writes_agent_and_bootstrap_specs(tmp_path: Path) -> None:
     agent_output = tmp_path / "agent"
     bootstrap_output = tmp_path / "bootstrap"
 
-    agent_exit = main(["write-agent-spec", "--output-dir", str(agent_output), "--name", "MyToolAgent"])
+    agent_exit = main(
+        ["write-agent-spec", "--output-dir", str(agent_output), "--name", "MyToolAgent"]
+    )
     bootstrap_exit = main(
-        ["write-bootstrap-spec", "--output-dir", str(bootstrap_output), "--name", "MyToolBootstrap"]
+        [
+            "write-bootstrap-spec",
+            "--output-dir",
+            str(bootstrap_output),
+            "--name",
+            "MyToolBootstrap",
+        ]
     )
 
     assert agent_exit == 0
     assert bootstrap_exit == 0
-    assert "update_online_tool.agent_cli" in (agent_output / "uot_agent_entry.py").read_text(encoding="utf-8")
-    assert "update_online_tool.bootstrap_cli" in (bootstrap_output / "uot_bootstrap_entry.py").read_text(encoding="utf-8")
+    assert "update_online_tool.agent_cli" in (
+        agent_output / "uot_agent_entry.py"
+    ).read_text(encoding="utf-8")
+    assert "update_online_tool.bootstrap_cli" in (
+        bootstrap_output / "uot_bootstrap_entry.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_cli_assemble_pyinstaller_supports_macos_onedir(tmp_path: Path) -> None:
@@ -1682,7 +2306,9 @@ def test_cli_assemble_pyinstaller_supports_macos_onedir(tmp_path: Path) -> None:
     (launcher_dir / "MyToolLauncher").write_text("launcher", encoding="utf-8")
     (release_internal / "libpython3.11.dylib").write_text("runtime", encoding="utf-8")
     (launcher_internal / "libpython3.11.dylib").write_text("runtime", encoding="utf-8")
-    settings_path.write_text('{"nas":{"root":"/Volumes/release-share/UpdateOnlineTool"}}', encoding="utf-8")
+    settings_path.write_text(
+        '{"nas":{"root":"/Volumes/release-share/UpdateOnlineTool"}}', encoding="utf-8"
+    )
 
     exit_code = main(
         [
@@ -1704,22 +2330,32 @@ def test_cli_assemble_pyinstaller_supports_macos_onedir(tmp_path: Path) -> None:
 
     install_root = dist / "MyTool_install_v1.2.3"
     update_root = dist / "MyTool_update_v1.2.3"
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
     assert (install_root / "MyTool").read_text(encoding="utf-8") == "launcher"
-    assert (install_root / "releases" / "1.2.3" / "MyTool").read_text(encoding="utf-8") == "gui"
+    assert (install_root / "releases" / "1.2.3" / "MyTool").read_text(
+        encoding="utf-8"
+    ) == "gui"
     assert current_payload["executable"] == "MyTool"
     assert current_payload["entry"] == {
         "kind": "executable",
         "path": "MyTool",
         "platform": "macos",
     }
-    assert (install_root / "releases" / "1.2.3" / "_internal" / "config" / "settings.json").is_file()
+    assert (
+        install_root / "releases" / "1.2.3" / "_internal" / "config" / "settings.json"
+    ).is_file()
     assert (update_root / "MyTool").read_text(encoding="utf-8") == "gui"
-    assert (update_root / "_launcher" / "MyTool").read_text(encoding="utf-8") == "launcher"
+    assert (update_root / "_launcher" / "MyTool").read_text(
+        encoding="utf-8"
+    ) == "launcher"
 
 
-def test_cli_assemble_pyinstaller_supports_macos_app_bundle_entries(tmp_path: Path) -> None:
+def test_cli_assemble_pyinstaller_supports_macos_app_bundle_entries(
+    tmp_path: Path,
+) -> None:
     """验证 macOS .app bundle 可作为 release 与 launcher 入口装配。
 
     :param tmp_path: pytest 临时目录。
@@ -1733,7 +2369,9 @@ def test_cli_assemble_pyinstaller_supports_macos_app_bundle_entries(tmp_path: Pa
     _write_macos_app_bundle(launcher_dir / "MyToolLauncher.app", "launcher")
     _write_app_bundle_symlink(release_dir / "MyToolGui.app")
     settings_path.parent.mkdir()
-    settings_path.write_text('{"nas":{"root":"/Volumes/release-share/UpdateOnlineTool"}}', encoding="utf-8")
+    settings_path.write_text(
+        '{"nas":{"root":"/Volumes/release-share/UpdateOnlineTool"}}', encoding="utf-8"
+    )
 
     exit_code = main(
         [
@@ -1761,11 +2399,21 @@ def test_cli_assemble_pyinstaller_supports_macos_app_bundle_entries(tmp_path: Pa
 
     install_root = dist / "MyTool_install_v1.2.3"
     update_root = dist / "MyTool_update_v1.2.3"
-    current_payload = json.loads((install_root / "current.json").read_text(encoding="utf-8"))
+    current_payload = json.loads(
+        (install_root / "current.json").read_text(encoding="utf-8")
+    )
     assert exit_code == 0
-    assert (install_root / "MyTool.app" / "Contents" / "MacOS" / "MyToolLauncher").read_text(encoding="utf-8") == "launcher"
     assert (
-        install_root / "releases" / "1.2.3" / "MyTool.app" / "Contents" / "MacOS" / "MyToolGui"
+        install_root / "MyTool.app" / "Contents" / "MacOS" / "MyToolLauncher"
+    ).read_text(encoding="utf-8") == "launcher"
+    assert (
+        install_root
+        / "releases"
+        / "1.2.3"
+        / "MyTool.app"
+        / "Contents"
+        / "MacOS"
+        / "MyToolGui"
     ).read_text(encoding="utf-8") == "gui"
     assert current_payload["executable"] == "MyTool.app"
     assert current_payload["entry"] == {
@@ -1774,18 +2422,42 @@ def test_cli_assemble_pyinstaller_supports_macos_app_bundle_entries(tmp_path: Pa
         "platform": "macos",
     }
     assert (
-        install_root / "releases" / "1.2.3" / "MyTool.app" / "Contents" / "Resources" / "config" / "settings.json"
+        install_root
+        / "releases"
+        / "1.2.3"
+        / "MyTool.app"
+        / "Contents"
+        / "Resources"
+        / "config"
+        / "settings.json"
     ).is_file()
-    assert (update_root / "MyTool.app" / "Contents" / "MacOS" / "MyToolGui").read_text(encoding="utf-8") == "gui"
-    release_link = install_root / "releases" / "1.2.3" / "MyTool.app" / "Contents" / "Resources" / "runtime.dylib"
-    update_link = update_root / "MyTool.app" / "Contents" / "Resources" / "runtime.dylib"
+    assert (update_root / "MyTool.app" / "Contents" / "MacOS" / "MyToolGui").read_text(
+        encoding="utf-8"
+    ) == "gui"
+    release_link = (
+        install_root
+        / "releases"
+        / "1.2.3"
+        / "MyTool.app"
+        / "Contents"
+        / "Resources"
+        / "runtime.dylib"
+    )
+    update_link = (
+        update_root / "MyTool.app" / "Contents" / "Resources" / "runtime.dylib"
+    )
     assert release_link.is_symlink()
     assert update_link.is_symlink()
     assert release_link.readlink() == Path("../Frameworks/runtime.dylib")
     assert update_link.readlink() == Path("../Frameworks/runtime.dylib")
-    assert (update_root / "_launcher" / "MyTool.app" / "Contents" / "MacOS" / "MyToolLauncher").read_text(
-        encoding="utf-8"
-    ) == "launcher"
+    assert (
+        update_root
+        / "_launcher"
+        / "MyTool.app"
+        / "Contents"
+        / "MacOS"
+        / "MyToolLauncher"
+    ).read_text(encoding="utf-8") == "launcher"
 
 
 def _write_macos_app_bundle(path: Path, executable_text: str) -> None:
@@ -1818,7 +2490,9 @@ def _write_app_bundle_symlink(path: Path) -> None:
         pytest.skip(f"symlink is not available on this filesystem: {exc}")
 
 
-def _write_install_root(tmp_path: Path, *, current_version: str, entry_name: str) -> Path:
+def _write_install_root(
+    tmp_path: Path, *, current_version: str, entry_name: str
+) -> Path:
     """写入测试安装根。
 
     :param tmp_path: pytest 临时目录。
@@ -1839,11 +2513,15 @@ def _write_install_root(tmp_path: Path, *, current_version: str, entry_name: str
             "platform": "windows",
         },
     }
-    (install_root / "current.json").write_text(json.dumps(current_payload), encoding="utf-8")
+    (install_root / "current.json").write_text(
+        json.dumps(current_payload), encoding="utf-8"
+    )
     return install_root
 
 
-def _write_install_release_entry(install_root: Path, version: str, entry_name: str, content: str) -> None:
+def _write_install_release_entry(
+    install_root: Path, version: str, entry_name: str, content: str
+) -> None:
     """写入测试 release 入口。
 
     :param install_root: 安装根路径。
@@ -1890,7 +2568,9 @@ def _write_runtime_manifest(path: Path, package: Path, *, version: str) -> None:
     )
 
 
-def test_cli_assemble_release_supports_tauri_app_with_stable_runtime(tmp_path: Path) -> None:
+def test_cli_assemble_release_supports_tauri_app_with_stable_runtime(
+    tmp_path: Path,
+) -> None:
     """通用 CLI 可装配 Tauri `.app`、Agent 与原生 Bootstrap。"""
     release_dir = tmp_path / "release"
     bootstrap_dir = tmp_path / "bootstrap"
@@ -1932,7 +2612,20 @@ def test_cli_assemble_release_supports_tauri_app_with_stable_runtime(tmp_path: P
     )
 
     assert exit_code == 0
-    assert (tmp_path / "install" / "uot-bootstrap").read_text(encoding="utf-8") == "bootstrap"
-    assert (tmp_path / "install" / "agent" / "uot-agent" / "uot-agent").read_text(encoding="utf-8") == "agent"
-    assert (tmp_path / "install" / "releases" / "1.0.0" / "Timer.app" / "Contents" / "MacOS" / "Timer").is_file()
+    assert (tmp_path / "install" / "uot-bootstrap").read_text(
+        encoding="utf-8"
+    ) == "bootstrap"
+    assert (tmp_path / "install" / "agent" / "uot-agent" / "uot-agent").read_text(
+        encoding="utf-8"
+    ) == "agent"
+    assert (
+        tmp_path
+        / "install"
+        / "releases"
+        / "1.0.0"
+        / "Timer.app"
+        / "Contents"
+        / "MacOS"
+        / "Timer"
+    ).is_file()
     assert not (tmp_path / "update" / "agent").exists()

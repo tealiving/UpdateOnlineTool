@@ -24,6 +24,8 @@ Use standard-library Python unless a dependency is explicitly justified in `pypr
 
 Pytest is the test framework. Add focused tests beside related behavior in `tests/`; prefer temporary directories and local files over real NAS dependencies. Cover manifest validation, version comparisons, settings resolution, Agent ready/handoff, CLI return codes, and release contracts. Changes to installation or rollback must test missing settings/bridge, invalid contracts, and safe rejection before `current.json` changes.
 
+Release ZIP changes must use the shared `ReleasePackagePlan`; do not add archive-path rules in CLI, GUI, Bridge, Agent, or host adapters. Cover the strict `windows|macos|linux` target contract, Windows reserved names, case-insensitive and NFC/NFD collisions, component/full-path and decompression-resource budgets, legal Chinese names, symlink preservation, and identical dry-run/install rejection. Manifest hash/size, plan, and extraction must bind the same opened package. Legacy releases may omit `uot-release.json`, but switching and rollback must still validate version, entry type, required paths, and root containment.
+
 ## Commit & Pull Request Guidelines
 
 History uses concise conventional-style commits such as `feat(配置): ...`, `fix(readme): ...`, and `docs(readme): ...`. Keep the type lowercase, add a scope when useful, and write the subject in English or Chinese consistently with the touched area. PRs should include a behavior summary, test commands run, linked issues or docs, and screenshots/video only for README or GUI integration changes.

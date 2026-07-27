@@ -57,6 +57,15 @@ transaction, and launches the stable Bootstrap.
   `release_required_paths`.
 - Keep Bootstrap and Agent at the stable install root. A release zip must contain
   only the versioned application release and its runtime resources.
+- Create framework output ZIPs with `uot package-release` so UOT runs the shared
+  cross-platform package plan before publishing. Do not use shell `zip` for Chinese
+  `.app` paths, and do not duplicate reserved-name, Unicode-collision, or length
+  rules in a host build script.
+- New manifests and release contracts must use exactly `windows`, `macos`, or
+  `linux`. Historical `current.json` platform aliases may be read only by the UOT
+  compatibility boundary and are rewritten canonically on switch or rollback.
+- Historical releases may omit `uot-release.json`; they still must pass version,
+  entry type, required-path, symlink containment, and release-root checks.
 - Use `agent-switch` and `agent-rollback` for local version selection; never
   write `current.json` from the host.
 - Treat the legacy `uot-updater`, `_launcher/`, and `updater/` layout as a

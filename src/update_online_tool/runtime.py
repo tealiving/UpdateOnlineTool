@@ -2,26 +2,37 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 import time
-import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
-from update_online_tool.install_root import missing_current_json_message, normalize_install_root
-from update_online_tool.installed import switch_installed_version as _switch_installed_version
+from update_online_tool.install_root import (
+    missing_current_json_message,
+    normalize_install_root,
+)
+from update_online_tool.installed import (
+    switch_installed_version as _switch_installed_version,
+)
 from update_online_tool.locks import runtime_lock
 from update_online_tool.manifest import UpdateManifest
-from update_online_tool.release_contract import normalize_release_required_paths, validate_release_artifact
+from update_online_tool.release_contract import (
+    normalize_release_required_paths,
+    validate_release_artifact,
+)
+from update_online_tool.release_identity import (
+    ensure_path_within,
+    normalize_release_version,
+    validate_release_relative_path,
+)
+from update_online_tool.release_package import ReleasePackagePlan
 from update_online_tool.signature import verify_manifest_signature_with_key_file
 
 
@@ -113,12 +124,16 @@ class RuntimeStatusTracker:
         self.current_phase = ""
         self.phase_durations_ms: dict[str, int] = {}
 
-    def status(self, *, phase: str, percent: int, message: str, error: str = "") -> RuntimeStatus:
+    def status(
+        self, *, phase: str, percent: int, message: str, error: str = ""
+    ) -> RuntimeStatus:
         """创建带耗时信息的阶段状态。"""
         now = time.monotonic()
         if phase != self.current_phase:
             if self.current_phase:
-                self.phase_durations_ms[self.current_phase] = int((now - self.phase_monotonic) * 1000)
+                self.phase_durations_ms[self.current_phase] = int(
+                    (now - self.phase_monotonic) * 1000
+                )
             self.current_phase = phase
             self.phase_monotonic = now
             self.phase_started_at = _utc_now_iso()
@@ -140,7 +155,9 @@ class RuntimeStatusTracker:
         """结束计时并返回总耗时和阶段耗时。"""
         now = time.monotonic()
         if self.current_phase:
-            self.phase_durations_ms[self.current_phase] = int((now - self.phase_monotonic) * 1000)
+            self.phase_durations_ms[self.current_phase] = int(
+                (now - self.phase_monotonic) * 1000
+            )
         return int((now - self.started_monotonic) * 1000), dict(self.phase_durations_ms)
 
 
@@ -188,13 +205,18 @@ def install_prepared_package(
     :param release_required_paths: 宿主要求 release 内存在的相对资源路径。
     :return: runtime 结果。
     """
+    normalized_version = normalize_release_version(manifest.version)
+    if normalized_version != manifest.version:
+        manifest = replace(manifest, version=normalized_version)
     root = normalize_install_root(Path(install_root))
     normalized_required_paths = normalize_release_required_paths(release_required_paths)
     package = Path(package_path)
     previous_version = _current_version(root)
     releases_root = root / "releases"
     target_release_dir = releases_root / manifest.version
-    temp_release_dir = root / f".update-{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+    temp_release_dir = (
+        root / f".update-{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+    )
     release_backup_dir: Path | None = None
     target_release_replaced = False
     can_rollback_release = True
@@ -206,7 +228,10 @@ def install_prepared_package(
     )
     try:
         if restart and not switch_current:
-            raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "restart requires switching current.json")
+            raise UpdateError(
+                UpdateErrorCode.SETTINGS_INVALID,
+                "restart requires switching current.json",
+            )
         if wait_pid is not None and not dry_run:
             write_update_status(
                 root,
@@ -227,12 +252,21 @@ def install_prepared_package(
                         message="verifying package",
                     ),
                 )
-            _verify_package(package, manifest)
             resolved_entry_name = _resolve_entry_name(root, entry_name)
+            package_plan = ReleasePackagePlan.from_zip(
+                package,
+                platform=manifest.platform,
+                extraction_root=temp_release_dir,
+                expected_size=manifest.package.size,
+                expected_sha256=manifest.package.sha256,
+            )
+            package_plan.require_entry(resolved_entry_name)
             if target_release_dir.exists() and not force:
-                raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release already exists: {target_release_dir}")
+                raise UpdateError(
+                    UpdateErrorCode.SETTINGS_INVALID,
+                    f"release already exists: {target_release_dir}",
+                )
             if dry_run:
-                _verify_zip_plan(package, resolved_entry_name)
                 return RuntimeResult(
                     success=True,
                     action="install_prepared",
@@ -249,10 +283,13 @@ def install_prepared_package(
                     message="extracting package",
                 ),
             )
-            _extract_zip_safe(package, temp_release_dir)
+            _extract_zip_safe(package, temp_release_dir, package_plan)
             _ensure_release_entry(temp_release_dir, resolved_entry_name)
             if target_release_dir.exists():
-                release_backup_dir = root / f".release-backup.{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+                release_backup_dir = (
+                    root
+                    / f".release-backup.{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+                )
                 shutil.move(str(target_release_dir), str(release_backup_dir))
             releases_root.mkdir(parents=True, exist_ok=True)
             temp_release_dir.replace(target_release_dir)
@@ -265,7 +302,9 @@ def install_prepared_package(
                 platform=manifest.platform,
                 required_paths=normalized_required_paths,
             )
-            sidecar_promotion = _promote_update_sidecars(extracted_root=target_release_dir, install_root=root)
+            sidecar_promotion = _promote_update_sidecars(
+                extracted_root=target_release_dir, install_root=root
+            )
             if switch_current:
                 write_update_status(
                     root,
@@ -310,7 +349,9 @@ def install_prepared_package(
                 try:
                     process = launch_current(install_root=root)
                 except OSError as exc:
-                    raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}") from exc
+                    raise UpdateError(
+                        UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}"
+                    ) from exc
                 elapsed_ms, phase_durations_ms = tracker.finish()
                 result = RuntimeResult(
                     success=True,
@@ -363,7 +404,13 @@ def install_prepared_package(
             if not dry_run and exc.code is not UpdateErrorCode.UPDATE_LOCKED:
                 write_update_result(
                     root,
-                    _failure_result("install_prepared", manifest.version, previous_version, target_release_dir, exc),
+                    _failure_result(
+                        "install_prepared",
+                        manifest.version,
+                        previous_version,
+                        target_release_dir,
+                        exc,
+                    ),
                 )
                 write_update_status(
                     root,
@@ -375,11 +422,19 @@ def install_prepared_package(
                     ),
                 )
             raise
-        wrapped = UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"install failed: {exc}")
+        wrapped = UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"install failed: {exc}"
+        )
         if not dry_run:
             write_update_result(
                 root,
-                _failure_result("install_prepared", manifest.version, previous_version, target_release_dir, wrapped),
+                _failure_result(
+                    "install_prepared",
+                    manifest.version,
+                    previous_version,
+                    target_release_dir,
+                    wrapped,
+                ),
             )
             write_update_status(
                 root,
@@ -460,12 +515,18 @@ def apply_pending_payload(
     install_root = _require_path(payload, "install_root")
     manifest_payload = payload.get("manifest")
     if not isinstance(manifest_payload, dict):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID, "pending manifest must be an object"
+        )
     if signature_key is not None:
-        verify_manifest_signature_with_key_file(manifest_payload, key_path=Path(signature_key))
+        verify_manifest_signature_with_key_file(
+            manifest_payload, key_path=Path(signature_key)
+        )
     manifest = UpdateManifest.from_payload(manifest_payload)
     resolved_entry_name = _pending_entry_name(payload, entry_name)
-    payload_required_paths = normalize_release_required_paths(payload.get("release_required_paths"))
+    payload_required_paths = normalize_release_required_paths(
+        payload.get("release_required_paths")
+    )
     effective_required_paths = (
         payload_required_paths
         if release_required_paths is None
@@ -573,7 +634,9 @@ def switch_installed_release(
                 try:
                     process = launch_current(install_root=root)
                 except OSError as exc:
-                    raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}") from exc
+                    raise UpdateError(
+                        UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}"
+                    ) from exc
                 restarted_pid = process.pid
                 message = "switched and restarted"
             elapsed_ms, phase_durations_ms = tracker.finish()
@@ -603,7 +666,13 @@ def switch_installed_release(
             if exc.code is not UpdateErrorCode.UPDATE_LOCKED:
                 write_update_result(
                     root,
-                    _failure_result("switch_installed", target_version, previous_version, target_release_dir, exc),
+                    _failure_result(
+                        "switch_installed",
+                        target_version,
+                        previous_version,
+                        target_release_dir,
+                        exc,
+                    ),
                 )
                 write_update_status(
                     root,
@@ -618,7 +687,13 @@ def switch_installed_release(
         wrapped = UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"switch failed: {exc}")
         write_update_result(
             root,
-            _failure_result("switch_installed", target_version, previous_version, target_release_dir, wrapped),
+            _failure_result(
+                "switch_installed",
+                target_version,
+                previous_version,
+                target_release_dir,
+                wrapped,
+            ),
         )
         write_update_status(
             root,
@@ -677,7 +752,10 @@ def rollback_installation(
             wait_for_process_exit(pid=wait_pid, timeout_seconds=wait_timeout)
         with runtime_lock(root, action="rollback", dry_run=False):
             if not previous_version:
-                raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json has no previous_version")
+                raise UpdateError(
+                    UpdateErrorCode.SETTINGS_INVALID,
+                    "current.json has no previous_version",
+                )
             write_update_status(
                 root,
                 tracker.status(
@@ -707,7 +785,9 @@ def rollback_installation(
                 try:
                     process = launch_current(install_root=root)
                 except OSError as exc:
-                    raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}") from exc
+                    raise UpdateError(
+                        UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"restart failed: {exc}"
+                    ) from exc
                 restarted_pid = process.pid
                 message = "rolled back and restarted"
             elapsed_ms, phase_durations_ms = tracker.finish()
@@ -736,7 +816,12 @@ def rollback_installation(
         if previous_version:
             release_dir = root / "releases" / previous_version
         if exc.code is not UpdateErrorCode.UPDATE_LOCKED:
-            write_update_result(root, _failure_result("rollback", previous_version, current_version, release_dir, exc))
+            write_update_result(
+                root,
+                _failure_result(
+                    "rollback", previous_version, current_version, release_dir, exc
+                ),
+            )
             write_update_status(
                 root,
                 tracker.status(
@@ -762,19 +847,58 @@ def launch_current(*, install_root: Path) -> subprocess.Popen[bytes]:
             if isinstance(path_payload, str):
                 executable = path_payload.strip()
     if not release_dir or not executable:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "current.json must contain release_dir and executable")
-    entry_path = root / release_dir / executable
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "current.json must contain release_dir and executable",
+        )
+    normalized_release_dir = validate_release_relative_path(
+        release_dir, "current.json release_dir"
+    )
+    release_parts = PurePosixPath(normalized_release_dir).parts
+    if len(release_parts) != 2 or release_parts[0] != "releases":
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "current.json release_dir must be releases/<version>",
+        )
+    version = normalize_release_version(release_parts[1])
+    if normalized_release_dir != f"releases/{version}":
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID,
+            "current.json release_dir must use the canonical releases/<version> form",
+        )
+    normalized_executable = validate_release_relative_path(
+        executable, "current.json executable"
+    )
+    releases_root = ensure_path_within(root, root / "releases", "releases directory")
+    release_path = ensure_path_within(
+        releases_root, root / normalized_release_dir, "current.json release_dir"
+    )
+    entry_path = ensure_path_within(
+        release_path,
+        release_path.joinpath(*PurePosixPath(normalized_executable).parts),
+        "current.json executable",
+    )
     if not entry_path.exists():
-        raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"current entry not found: {entry_path}")
+        raise UpdateError(
+            UpdateErrorCode.UPDATER_NOT_FOUND, f"current entry not found: {entry_path}"
+        )
     if _is_macos_app_bundle(entry_path) and sys.platform == "darwin":
-        return subprocess.Popen([_macos_open_executable(), "-n", str(entry_path)], cwd=str(entry_path.parent), close_fds=True)
+        return subprocess.Popen(
+            [_macos_open_executable(), "-n", str(entry_path)],
+            cwd=str(entry_path.parent),
+            close_fds=True,
+        )
     return subprocess.Popen([str(entry_path)], cwd=str(entry_path.parent))
 
 
-def wait_for_process_exit(*, pid: int, timeout_seconds: float = 60.0, poll_interval: float = 0.25) -> None:
+def wait_for_process_exit(
+    *, pid: int, timeout_seconds: float = 60.0, poll_interval: float = 0.25
+) -> None:
     """等待指定进程退出；超时则抛出结构化错误。"""
     if pid <= 0:
-        raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"pid must be positive: {pid}")
+        raise UpdateError(
+            UpdateErrorCode.SETTINGS_INVALID, f"pid must be positive: {pid}"
+        )
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     while _is_process_alive(pid):
         if time.monotonic() >= deadline:
@@ -843,7 +967,10 @@ def _is_windows_process_alive(pid: int) -> bool:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
@@ -879,7 +1006,9 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.parent / f".{path.name}.{os.getpid()}.{uuid4().hex}.tmp"
     try:
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         temp_path.replace(path)
     except Exception:
         if temp_path.exists():
@@ -922,77 +1051,21 @@ def _pending_entry_name(payload: dict[str, object], explicit_entry_name: str) ->
     return ""
 
 
-def _verify_package(package_path: Path, manifest: UpdateManifest) -> None:
-    """按 manifest 校验本地包大小和 SHA-256。"""
-    if not package_path.is_file():
-        raise UpdateError(UpdateErrorCode.PACKAGE_NOT_FOUND, f"package not found: {package_path}")
-    actual_size = package_path.stat().st_size
-    if actual_size != manifest.package.size:
-        raise UpdateError(
-            UpdateErrorCode.PACKAGE_SIZE_MISMATCH,
-            f"package.size {manifest.package.size} != actual {actual_size}",
-        )
-    digest = hashlib.sha256()
-    with package_path.open("rb") as file_obj:
-        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
-            digest.update(chunk)
-    actual_sha256 = digest.hexdigest()
-    if actual_sha256 != manifest.package.sha256.lower():
-        raise UpdateError(
-            UpdateErrorCode.PACKAGE_HASH_MISMATCH,
-            f"package.sha256 {manifest.package.sha256.lower()} != actual {actual_sha256}",
-        )
+def _extract_zip_safe(
+    package_path: Path,
+    target_dir: Path,
+    package_plan: ReleasePackagePlan | None = None,
+) -> None:
+    """按统一 package plan 安全解压 ZIP。"""
+    plan = package_plan or ReleasePackagePlan.from_zip(
+        package_path, extraction_root=target_dir
+    )
+    plan.extract(target_dir)
 
 
-def _extract_zip_safe(package_path: Path, target_dir: Path) -> None:
-    """安全解压 zip，拒绝绝对路径和目录穿越。"""
-    target_dir.mkdir(parents=True, exist_ok=False)
-    try:
-        with zipfile.ZipFile(package_path) as archive:
-            for member in archive.infolist():
-                parts = _safe_zip_member_parts(member.filename)
-                extracted_path = target_dir.joinpath(*parts)
-                mode = member.external_attr >> 16
-                if member.is_dir():
-                    extracted_path.mkdir(parents=True, exist_ok=True)
-                    if mode:
-                        extracted_path.chmod(mode)
-                    continue
-                if stat.S_ISLNK(mode):
-                    _extract_zip_symlink(archive, member, extracted_path, target_dir)
-                    continue
-                extracted_path.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(member) as source_file, extracted_path.open("wb") as target_file:
-                    shutil.copyfileobj(source_file, target_file)
-                if mode:
-                    extracted_path.chmod(mode)
-    except zipfile.BadZipFile as exc:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"package is not a valid zip: {package_path}") from exc
-
-
-def _extract_zip_symlink(archive: zipfile.ZipFile, member: zipfile.ZipInfo, extracted_path: Path, target_dir: Path) -> None:
-    """恢复 zip 中的 POSIX symlink，并拒绝指向解压根外部的链接。
-
-    :param archive: 待解压的 zip 包。
-    :param member: symlink 成员信息。
-    :param extracted_path: symlink 目标写入路径。
-    :param target_dir: 当前解压根目录。
-    :return: None
-    """
-    link_target = archive.read(member).decode("utf-8")
-    if not link_target:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"empty symlink target: {member.filename}")
-    link_target_path = Path(link_target)
-    if link_target_path.is_absolute():
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe symlink target: {member.filename}")
-    resolved_target = (extracted_path.parent / link_target_path).resolve()
-    if not resolved_target.is_relative_to(target_dir.resolve()):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe symlink target: {member.filename}")
-    extracted_path.parent.mkdir(parents=True, exist_ok=True)
-    extracted_path.symlink_to(link_target)
-
-
-def _promote_update_sidecars(*, extracted_root: Path, install_root: Path) -> SidecarPromotion | None:
+def _promote_update_sidecars(
+    *, extracted_root: Path, install_root: Path
+) -> SidecarPromotion | None:
     """把 update 包中的 launcher/updater sidecar 提升到安装根。
 
     :param extracted_root: 已安装 release 目录。
@@ -1000,19 +1073,31 @@ def _promote_update_sidecars(*, extracted_root: Path, install_root: Path) -> Sid
     :return: sidecar 提升事务；无 sidecar 时返回 None。
     """
     backup_root = install_root / f".sidecar-backup.{os.getpid()}.{uuid4().hex}.tmp"
-    promotion = SidecarPromotion(backup_root=backup_root, backups=[], touched_targets=[])
+    promotion = SidecarPromotion(
+        backup_root=backup_root, backups=[], touched_targets=[]
+    )
     try:
         changed = False
         launcher_sidecar = extracted_root / "_launcher"
         if launcher_sidecar.is_dir():
             for item in launcher_sidecar.iterdir():
-                _copy_sidecar_item(item, install_root / item.name, promotion, backup_name=Path("launcher") / item.name)
+                _copy_sidecar_item(
+                    item,
+                    install_root / item.name,
+                    promotion,
+                    backup_name=Path("launcher") / item.name,
+                )
                 changed = True
             shutil.rmtree(launcher_sidecar)
 
         updater_sidecar = extracted_root / "updater"
         if updater_sidecar.is_dir():
-            _copy_sidecar_item(updater_sidecar, install_root / "updater", promotion, backup_name=Path("updater"))
+            _copy_sidecar_item(
+                updater_sidecar,
+                install_root / "updater",
+                promotion,
+                backup_name=Path("updater"),
+            )
             changed = True
             shutil.rmtree(updater_sidecar)
 
@@ -1025,7 +1110,9 @@ def _promote_update_sidecars(*, extracted_root: Path, install_root: Path) -> Sid
         raise
 
 
-def _copy_sidecar_item(source: Path, target: Path, promotion: SidecarPromotion, *, backup_name: Path) -> None:
+def _copy_sidecar_item(
+    source: Path, target: Path, promotion: SidecarPromotion, *, backup_name: Path
+) -> None:
     """复制一个 sidecar 项并备份被覆盖目标。
 
     :param source: sidecar 来源路径。
@@ -1090,46 +1177,6 @@ def _remove_empty_backup_root(backup_root: Path) -> None:
         shutil.rmtree(backup_root)
 
 
-def _verify_zip_plan(package_path: Path, entry_name: str) -> None:
-    """校验 zip 可安全解压且包含 release 入口。"""
-    try:
-        with zipfile.ZipFile(package_path) as archive:
-            member_names = {_normalized_zip_member_name(member.filename) for member in archive.infolist()}
-            for member in archive.infolist():
-                _safe_zip_member_parts(member.filename)
-    except zipfile.BadZipFile as exc:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"package is not a valid zip: {package_path}") from exc
-    normalized_entry = _normalized_zip_member_name(entry_name)
-    if normalized_entry in member_names:
-        return
-    if normalized_entry.endswith(".app"):
-        macos_prefix = f"{normalized_entry}/Contents/MacOS/"
-        if any(name.startswith(macos_prefix) and name != macos_prefix for name in member_names):
-            return
-    raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release entry not found in package: {entry_name}")
-
-
-def _safe_zip_member_parts(member_name: str) -> tuple[str, ...]:
-    """返回安全 zip 成员路径，拒绝绝对路径、盘符和目录穿越。"""
-    normalized_name = str(member_name or "").replace("\\", "/")
-    pure_path = PurePosixPath(normalized_name)
-    if pure_path.is_absolute():
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
-    parts = tuple(part for part in pure_path.parts if part)
-    if not parts:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
-    if ".." in parts or any(part == "" for part in parts):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
-    if ":" in parts[0]:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"unsafe zip member: {member_name}")
-    return parts
-
-
-def _normalized_zip_member_name(member_name: str) -> str:
-    """把 zip 成员名规范为 POSIX 路径。"""
-    return str(member_name or "").replace("\\", "/").strip("/")
-
-
 def _ensure_release_entry(release_dir: Path, entry_name: str) -> None:
     """校验 release 入口存在。"""
     entry_path = release_dir / entry_name
@@ -1137,9 +1184,14 @@ def _ensure_release_entry(release_dir: Path, entry_name: str) -> None:
         return
     if entry_path.is_dir() and entry_path.suffix == ".app":
         macos_dir = entry_path / "Contents" / "MacOS"
-        if macos_dir.is_dir() and any(candidate.is_file() for candidate in macos_dir.iterdir()):
+        if macos_dir.is_dir() and any(
+            candidate.is_file() for candidate in macos_dir.iterdir()
+        ):
             return
-    raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, f"release entry not found in package: {entry_path}")
+    raise UpdateError(
+        UpdateErrorCode.SETTINGS_INVALID,
+        f"release entry not found in package: {entry_path}",
+    )
 
 
 def _resolve_entry_name(install_root: Path, entry_name: str) -> str:
@@ -1157,7 +1209,10 @@ def _resolve_entry_name(install_root: Path, entry_name: str) -> str:
     executable = payload.get("executable")
     if isinstance(executable, str) and executable.strip():
         return executable.strip()
-    raise UpdateError(UpdateErrorCode.SETTINGS_INVALID, "entry_name is required when current.json has no entry")
+    raise UpdateError(
+        UpdateErrorCode.SETTINGS_INVALID,
+        "entry_name is required when current.json has no entry",
+    )
 
 
 def _current_version(install_root: Path) -> str:
@@ -1174,14 +1229,23 @@ def _read_json_object(path: Path, context: str) -> dict[str, Any]:
     """读取 JSON 对象。"""
     if not path.is_file():
         if context == "current.json":
-            raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, missing_current_json_message(path.parent))
-        raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"{context} not found: {path}")
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_NOT_FOUND,
+                missing_current_json_message(path.parent),
+            )
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_NOT_FOUND, f"{context} not found: {path}"
+        )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{context} is not valid JSON: {path}") from exc
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID, f"{context} is not valid JSON: {path}"
+        ) from exc
     if not isinstance(payload, dict):
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{context} must be a JSON object")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID, f"{context} must be a JSON object"
+        )
     return payload
 
 
@@ -1191,7 +1255,9 @@ def _is_macos_app_bundle(path: Path) -> bool:
         path.is_dir()
         and path.suffix == ".app"
         and (path / "Contents" / "MacOS").is_dir()
-        and any(candidate.is_file() for candidate in (path / "Contents" / "MacOS").iterdir())
+        and any(
+            candidate.is_file() for candidate in (path / "Contents" / "MacOS").iterdir()
+        )
     )
 
 
@@ -1199,5 +1265,7 @@ def _require_path(payload: dict[str, Any], key: str) -> Path:
     """从 JSON 对象读取非空路径。"""
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise UpdateError(UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string")
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_INVALID, f"{key} must be a non-empty string"
+        )
     return Path(value)

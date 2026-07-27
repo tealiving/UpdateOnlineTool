@@ -104,3 +104,37 @@ def test_manifest_rejects_bad_sha256() -> None:
         UpdateManifest.from_payload(payload)
 
     assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
+def test_manifest_rejects_version_that_escapes_release_root() -> None:
+    """manifest 版本不得被 SDK 调用方用于目录逃逸。"""
+    payload = _payload()
+    payload["version"] = "../../越界版本"
+
+    with pytest.raises(UpdateError) as error:
+        UpdateManifest.from_payload(payload)
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
+@pytest.mark.parametrize("platform", ["win32", "desktop", "Windows"])
+def test_manifest_rejects_noncanonical_platform(platform: str) -> None:
+    """远端 manifest 只能声明规范的三种目标平台。"""
+    payload = _payload()
+    payload["platform"] = platform
+
+    with pytest.raises(UpdateError) as error:
+        UpdateManifest.from_payload(payload)
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
+
+
+def test_manifest_wraps_invalid_unicode_as_domain_error() -> None:
+    """非法 surrogate 不得越过 manifest 的结构化错误边界。"""
+    payload = _payload()
+    payload["app_id"] = "\ud800"
+
+    with pytest.raises(UpdateError) as error:
+        UpdateManifest.from_payload(payload)
+
+    assert error.value.code is UpdateErrorCode.MANIFEST_INVALID
