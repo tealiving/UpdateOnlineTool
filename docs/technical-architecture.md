@@ -216,6 +216,10 @@ flowchart TD
 
 UOT 在桌面 facade 中提供 `DesktopUpdateClient.prewarm_updater()` 作为标准预热入口。GUI 可以在启动后空闲阶段从后台线程调用该方法，让首次加载成本提前发生；后续用户触发 `install_remote_version()`、`switch_installed_version()` 或 `rollback()` 时仍走同一套标准 updater runtime。
 
+程序化启动标准 updater 属于后台 runtime 交接。Windows 下预热、安装、切换、回滚及旧
+PyQt pending 兼容入口必须复用统一的无控制台窗口启动 helper；交互式 CLI 直接执行不经过
+该 helper。后台运行进度通过 `update-status.json` / `update-result.json` 公开，不依赖终端窗口。
+
 预热的约束：
 
 - 预热只运行 updater 的轻量帮助命令，不修改安装根状态。
