@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from update_online_tool import UpdateError, UpdateErrorCode
+from update_online_tool import launcher as launcher_module
 from update_online_tool.launcher import (
     StandaloneUpdaterLauncher,
     launch_updater_process,
@@ -25,14 +29,14 @@ def test_launcher_writes_pending_manifest_and_starts_process(tmp_path: Path) -> 
     updater.write_text("fake", encoding="utf-8")
     calls: list[list[str]] = []
 
-    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
         """捕获 Popen 参数。
 
         :param args: 命令参数。
-        :param cwd: 工作目录。
-        :param close_fds: 是否关闭文件描述符。
+        :param kwargs: Popen 关键字参数。
         :return: 假进程。
         """
+        assert kwargs["close_fds"] is True
         calls.append(args)
 
         class Process:
@@ -100,7 +104,8 @@ def test_launcher_stages_sidecar_before_starting_it(
     )
     calls: list[list[str]] = []
 
-    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
+        assert kwargs["close_fds"] is True
         calls.append(args)
 
         class Process:
@@ -131,16 +136,15 @@ def test_launcher_rejects_updater_that_exits_during_startup(tmp_path: Path) -> N
     updater = tmp_path / "AutomationManualUpdater"
     updater.write_text("fake", encoding="utf-8")
 
-    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
         """返回立即失败的 updater 进程。
 
         :param args: 启动命令。
-        :param cwd: 工作目录。
-        :param close_fds: 是否关闭文件描述符。
+        :param kwargs: Popen 关键字参数。
         :return: 失败进程。
         """
 
-        del args, cwd, close_fds
+        del args, kwargs
 
         class Process:
             """模拟启动后立即退出的进程。"""
@@ -174,9 +178,9 @@ def test_launcher_rejects_zero_exit_before_old_process_handoff(tmp_path: Path) -
     updater = tmp_path / "AutomationManualUpdater"
     updater.write_text("fake", encoding="utf-8")
 
-    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
         """返回立即正常退出但未等待旧进程的 updater。"""
-        del args, cwd, close_fds
+        del args, kwargs
 
         class Process:
             """模拟错误吞掉命令后返回零的 updater。"""
@@ -224,6 +228,84 @@ def test_launch_updater_accepts_process_running_after_probe(tmp_path: Path) -> N
     assert result is process
 
 
+def test_launch_updater_hides_console_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """程序化启动 Windows updater 时不得创建可见控制台。
+
+    :param tmp_path: pytest 临时目录。
+    :param monkeypatch: pytest monkeypatch 工具。
+    :return: None。
+    """
+
+    updater = tmp_path / "AutomationManualUpdater.exe"
+    updater.write_text("fake", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class Process:
+        """提供启动探测所需的最小进程形状。"""
+
+        pid = 458
+
+    def popen(command: list[str], **kwargs: object) -> Process:
+        """捕获 updater 的平台启动参数。
+
+        :param command: updater 命令。
+        :param kwargs: Popen 关键字参数。
+        :return: 假进程。
+        """
+
+        captured["command"] = tuple(command)
+        captured.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(
+        launcher_module,
+        "os",
+        SimpleNamespace(name="nt", fspath=os.fspath),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher_module.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    launch_updater_process(
+        [str(updater), "apply"],
+        updater_executable=updater,
+        popen=popen,
+    )
+
+    assert int(captured["creationflags"]) & 0x08000000
+
+
+@pytest.mark.skipif(os.name != "nt", reason="需要真实 Windows console subsystem")
+def test_launch_updater_has_no_console_window_on_windows(tmp_path: Path) -> None:
+    """程序化启动的真实 Windows 子进程不得获得控制台窗口。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None。
+    """
+
+    result_path = tmp_path / "console-window.txt"
+    child_code = (
+        "import ctypes,pathlib;"
+        f"pathlib.Path({str(result_path)!r}).write_text("
+        "str(int(bool(ctypes.windll.kernel32.GetConsoleWindow()))),encoding='utf-8')"
+    )
+
+    process = launch_updater_process(
+        [sys.executable, "-c", child_code],
+        updater_executable=Path(sys.executable),
+    )
+
+    assert process.wait(timeout=10.0) == 0
+    assert result_path.read_text(encoding="utf-8") == "0"
+
+
 def test_launch_updater_converts_popen_oserror_to_update_error(tmp_path: Path) -> None:
     """Popen 无法启动时应返回 UPDATER_LAUNCH_FAILED。"""
     updater = tmp_path / "AutomationManualUpdater"
@@ -232,6 +314,39 @@ def test_launch_updater_converts_popen_oserror_to_update_error(tmp_path: Path) -
     def popen(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         """模拟操作系统拒绝启动 updater。"""
         raise OSError("permission denied")
+
+    with pytest.raises(UpdateError) as error:
+        launch_updater_process(
+            [str(updater), "--help"],
+            updater_executable=updater,
+            popen=popen,
+        )
+
+    assert error.value.code is UpdateErrorCode.UPDATER_LAUNCH_FAILED
+
+
+def test_launch_updater_converts_incompatible_popen_contract_to_update_error(
+    tmp_path: Path,
+) -> None:
+    """Popen 不接受后台参数时必须结构化失败且禁止兼容降级。
+
+    :param tmp_path: pytest 临时目录。
+    :return: None。
+    """
+
+    updater = tmp_path / "AutomationManualUpdater"
+    updater.write_text("fake", encoding="utf-8")
+
+    def popen(*args: object, **kwargs: object) -> object:
+        """模拟旧进程工厂拒绝标准 Popen 参数。
+
+        :param args: Popen 位置参数。
+        :param kwargs: Popen 关键字参数。
+        :return: 不返回，始终抛出异常。
+        """
+
+        del args, kwargs
+        raise TypeError("creationflags is unsupported")
 
     with pytest.raises(UpdateError) as error:
         launch_updater_process(
@@ -254,14 +369,14 @@ def test_launcher_passes_restart_executable_as_entry_name(tmp_path: Path) -> Non
     updater.write_text("fake", encoding="utf-8")
     calls: list[list[str]] = []
 
-    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
         """捕获 Popen 参数。
 
         :param args: 命令参数。
-        :param cwd: 工作目录。
-        :param close_fds: 是否关闭文件描述符。
+        :param kwargs: Popen 关键字参数。
         :return: 假进程。
         """
+        assert kwargs["close_fds"] is True
         calls.append(args)
 
         class Process:
@@ -308,14 +423,14 @@ def test_launcher_passes_signature_key_and_wait_timeout(tmp_path: Path) -> None:
     signature_key.write_text("public", encoding="utf-8")
     calls: list[list[str]] = []
 
-    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
         """捕获 Popen 参数。
 
         :param args: 命令参数。
-        :param cwd: 工作目录。
-        :param close_fds: 是否关闭文件描述符。
+        :param kwargs: Popen 关键字参数。
         :return: 假进程。
         """
+        assert kwargs["close_fds"] is True
         calls.append(args)
 
         class Process:

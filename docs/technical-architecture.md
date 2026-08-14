@@ -119,7 +119,7 @@ manifest 采用 schema version 2，核心字段包括：
 └── update-result.json
 ```
 
-`current.json` 指向当前激活 release，并记录 `previous_version` 供回滚。`update.lock` 防止安装、切换和回滚并发执行。`update-status.json` 和 `update-result.json` 使用同目录临时文件原子替换，方便 GUI 轮询。
+`current.json` 指向当前激活 release，并记录 `previous_version` 供回滚。`update.lock` 防止安装、切换和回滚并发执行。`update-status.json` 和 `update-result.json` 使用同目录临时文件原子替换，方便 GUI 轮询。状态负载始终包含 `phase_elapsed_ms` 与 `total_elapsed_ms`；亚毫秒阶段写入 `0`，不得因平台计时粒度省略字段。
 
 ## 发布流程
 
@@ -215,6 +215,10 @@ flowchart TD
 打包后的 PyInstaller updater 在 macOS 等平台上可能出现新路径首次执行慢、第二次执行很快的冷启动现象。这类耗时发生在 updater 进程首次加载阶段，不等同于 `current.json` 切换慢，也不能仅凭签名、quarantine、NAS 路径或包大小直接归因。
 
 UOT 在桌面 facade 中提供 `DesktopUpdateClient.prewarm_updater()` 作为标准预热入口。GUI 可以在启动后空闲阶段从后台线程调用该方法，让首次加载成本提前发生；后续用户触发 `install_remote_version()`、`switch_installed_version()` 或 `rollback()` 时仍走同一套标准 updater runtime。
+
+程序化启动标准 updater 属于后台 runtime 交接。Windows 下预热、安装、切换、回滚及旧
+PyQt pending 兼容入口必须复用统一的无控制台窗口启动 helper；交互式 CLI 直接执行不经过
+该 helper。后台运行进度通过 `update-status.json` / `update-result.json` 公开，不依赖终端窗口。
 
 预热的约束：
 

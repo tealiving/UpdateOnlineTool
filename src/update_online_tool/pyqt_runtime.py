@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from update_online_tool.errors import UpdateError, UpdateErrorCode
-from update_online_tool.launcher import LaunchResult
+from update_online_tool.launcher import LaunchResult, launch_updater_process
 from update_online_tool.manifest import UpdateManifest
 
 PopenFactory = Callable[..., Any]
@@ -53,7 +52,9 @@ def build_pyqt_pending_payload(request: PyQtPendingUpdateRequest) -> dict[str, o
     }
 
 
-def write_pyqt_pending_manifest(*, pending_path: Path, request: PyQtPendingUpdateRequest) -> Path:
+def write_pyqt_pending_manifest(
+    *, pending_path: Path, request: PyQtPendingUpdateRequest
+) -> Path:
     """写入 PyQt updater 兼容 pending manifest。
 
     :param pending_path: pending-update.json 路径。
@@ -64,7 +65,12 @@ def write_pyqt_pending_manifest(*, pending_path: Path, request: PyQtPendingUpdat
     target_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = target_path.with_name(f"{target_path.name}.tmp")
     temp_path.write_text(
-        json.dumps(build_pyqt_pending_payload(request), ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(
+            build_pyqt_pending_payload(request),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
     temp_path.replace(target_path)
@@ -87,18 +93,19 @@ def launch_existing_pending(
     executable = Path(updater_executable)
     pending_path = Path(pending_manifest_path)
     if not executable.is_file():
-        raise UpdateError(UpdateErrorCode.UPDATER_NOT_FOUND, f"updater not found: {executable}")
-    if not pending_path.is_file():
-        raise UpdateError(UpdateErrorCode.MANIFEST_NOT_FOUND, f"pending manifest not found: {pending_path}")
-    popen_factory = popen or subprocess.Popen
-    try:
-        process = popen_factory(
-            [str(executable), "apply", "--pending", str(pending_path), "--restart"],
-            cwd=str(executable.parent),
-            close_fds=True,
+        raise UpdateError(
+            UpdateErrorCode.UPDATER_NOT_FOUND, f"updater not found: {executable}"
         )
-    except OSError as exc:
-        raise UpdateError(UpdateErrorCode.UPDATER_LAUNCH_FAILED, f"updater launch failed: {executable}") from exc
+    if not pending_path.is_file():
+        raise UpdateError(
+            UpdateErrorCode.MANIFEST_NOT_FOUND,
+            f"pending manifest not found: {pending_path}",
+        )
+    process = launch_updater_process(
+        [str(executable), "apply", "--pending", str(pending_path), "--restart"],
+        updater_executable=executable,
+        popen=popen,
+    )
     return LaunchResult(
         started=True,
         updater_pid=getattr(process, "pid", None),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -22,6 +21,7 @@ from update_online_tool.launcher import (
     LaunchResult,
     PopenFactory,
     StandaloneUpdaterLauncher,
+    background_process_creation_kwargs,
     launch_updater_process,
 )
 from update_online_tool.manifest import UpdateManifest
@@ -343,14 +343,11 @@ class DesktopUpdateClient:
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
         }
-        if os.name == "nt":
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        kwargs.update(background_process_creation_kwargs())
         started_at = time.perf_counter()
         try:
             process = self._popen(command, **kwargs)
-        except TypeError:
-            process = self._popen(command, cwd=str(updater.parent), close_fds=True)
-        except OSError as exc:
+        except (OSError, TypeError) as exc:
             raise UpdateError(
                 UpdateErrorCode.UPDATER_LAUNCH_FAILED,
                 f"updater launch failed: {updater}",

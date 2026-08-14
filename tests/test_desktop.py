@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from update_online_tool import desktop as desktop_module
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.downloader import CancellationToken
 from update_online_tool.desktop import DesktopUpdateClient, DesktopUpdateConfig
@@ -418,6 +419,56 @@ def test_desktop_client_prewarms_updater(tmp_path: Path) -> None:
     assert "stderr" in kwargs
 
 
+def test_desktop_client_prewarm_fails_closed_when_popen_rejects_background_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """后台参数不兼容时不得退回可能弹窗的 updater 启动。
+
+    :param tmp_path: pytest 临时目录。
+    :param monkeypatch: pytest monkeypatch 工具。
+    :return: None。
+    """
+
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+    updater = install_root / "updater" / "MyToolUpdater.exe"
+    updater.parent.mkdir()
+    updater.write_text("updater", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def popen(args: list[str], **kwargs: object) -> object:
+        """模拟不支持 Windows 后台参数的旧进程工厂。
+
+        :param args: 进程参数。
+        :param kwargs: Popen 关键字参数。
+        :return: 假进程。
+        """
+
+        del args
+        calls.append(dict(kwargs))
+        if "creationflags" in kwargs:
+            raise TypeError("creationflags is unsupported")
+        return _popen_immediate_success([], **kwargs)
+
+    monkeypatch.setattr(
+        desktop_module,
+        "background_process_creation_kwargs",
+        lambda: {"creationflags": 0x08000000},
+    )
+    client = _client(
+        install_root=install_root,
+        nas_root=tmp_path / "nas",
+        popen=popen,
+    )
+
+    with pytest.raises(UpdateError) as error:
+        client.prewarm_updater()
+
+    assert error.value.code is UpdateErrorCode.UPDATER_LAUNCH_FAILED
+    assert len(calls) == 1
+    assert calls[0]["creationflags"] == 0x08000000
+
+
 def test_desktop_client_prewarm_rejects_nonzero_updater_exit(tmp_path: Path) -> None:
     """updater 无法加载运行时时，预热必须返回结构化失败。
 
@@ -646,14 +697,14 @@ def _popen_recorder(calls: list[list[str]]):
     :return: 假 Popen 函数。
     """
 
-    def popen(args: list[str], cwd: str, close_fds: bool):  # noqa: ANN001
+    def popen(args: list[str], **kwargs: object):  # noqa: ANN001
         """记录进程启动参数。
 
         :param args: 进程命令参数。
-        :param cwd: 工作目录。
-        :param close_fds: 是否关闭文件描述符。
+        :param kwargs: Popen 关键字参数。
         :return: 假进程对象。
         """
+        assert kwargs["close_fds"] is True
         calls.append(args)
 
         class Process:

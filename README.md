@@ -476,7 +476,7 @@ uot install-prepared \
   --dry-run
 ```
 
-`apply-update` 读取 `pending-update.json` 中的 `package_path`、`install_root` 和 `manifest`。runtime 会创建 `update.lock` 防止同一安装根并发更新；成功或失败都会写入 `update-result.json`，并持续刷新 `update-status.json`，但 dry-run 不写安装状态。标准状态阶段包括 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是面向 UI 的阶段进度提示，不代表逐字节下载进度。`--wait-pid` 用于等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT` 并提示用户关闭应用；`--restart` 会在切换 `current.json` 后启动当前版本并记录 `restarted_pid`。如果旧 GUI 已退出，实时进度必须由 updater 自己显示窗口，或由外部监控进程轮询 `update-status.json`；新 GUI 启动后可读取该文件展示上次更新结果。如果项目已有自定义 updater，也可以只使用 `prepare-version` 和 SDK，自行控制进程退出、安装和重启。
+`apply-update` 读取 `pending-update.json` 中的 `package_path`、`install_root` 和 `manifest`。runtime 会创建 `update.lock` 防止同一安装根并发更新；成功或失败都会写入 `update-result.json`，并持续刷新 `update-status.json`，但 dry-run 不写安装状态。标准状态阶段包括 `waiting_old_process`、`verifying`、`extracting`、`switching`、`restarting`、`success` 和 `failed`，`percent` 是面向 UI 的阶段进度提示，不代表逐字节下载进度。`--wait-pid` 用于等待旧 GUI 退出，超时返回 `PROCESS_TIMEOUT` 并提示用户关闭应用；`--restart` 会在切换 `current.json` 后启动当前版本并记录 `restarted_pid`。程序化启动的 Windows console updater 默认以后台窗口模式运行；旧 GUI 退出后的实时进度可由专用 updater UI 或外部监控进程轮询 `update-status.json` 展示，新 GUI 启动后也可读取该文件展示上次更新结果。如果项目已有自定义 updater，也可以只使用 `prepare-version` 和 SDK，自行控制进程退出、安装和重启。
 
 如果目标版本已经存在于安装根的 `releases/<version>`，可以直接列出并切换本地版本：
 

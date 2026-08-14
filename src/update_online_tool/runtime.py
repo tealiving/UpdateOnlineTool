@@ -100,10 +100,8 @@ class RuntimeStatus:
             payload["started_at"] = self.started_at
         if self.phase_started_at:
             payload["phase_started_at"] = self.phase_started_at
-        if self.phase_elapsed_ms:
-            payload["phase_elapsed_ms"] = self.phase_elapsed_ms
-        if self.total_elapsed_ms:
-            payload["total_elapsed_ms"] = self.total_elapsed_ms
+        payload["phase_elapsed_ms"] = self.phase_elapsed_ms
+        payload["total_elapsed_ms"] = self.total_elapsed_ms
         if self.error:
             payload["error"] = self.error
         return payload

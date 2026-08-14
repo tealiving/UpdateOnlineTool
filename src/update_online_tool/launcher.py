@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -191,12 +192,16 @@ def launch_updater_process(
     """
     factory = popen or subprocess.Popen
     try:
+        popen_kwargs: dict[str, object] = {
+            "cwd": str(Path(updater_executable).parent),
+            "close_fds": True,
+        }
+        popen_kwargs.update(background_process_creation_kwargs())
         process = factory(
             list(command),
-            cwd=str(Path(updater_executable).parent),
-            close_fds=True,
+            **popen_kwargs,
         )
-    except OSError as exc:
+    except (OSError, TypeError) as exc:
         raise UpdateError(
             UpdateErrorCode.UPDATER_LAUNCH_FAILED,
             f"updater launch failed: {updater_executable}",
@@ -207,6 +212,26 @@ def launch_updater_process(
         require_running=require_running,
     )
     return process
+
+
+def background_process_creation_kwargs() -> dict[str, object]:
+    """返回程序化启动桌面更新运行时的平台参数。
+
+    Windows console subsystem 可执行文件由 GUI 或后台运行时启动时必须禁止创建
+    可见控制台；其他平台不需要额外窗口参数。
+
+    :return: 可合并到 ``subprocess.Popen`` 的平台参数。
+    """
+
+    if os.name != "nt":
+        return {}
+    no_window_flag = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if not no_window_flag:
+        raise UpdateError(
+            UpdateErrorCode.UPDATER_LAUNCH_FAILED,
+            "Windows background updater requires CREATE_NO_WINDOW",
+        )
+    return {"creationflags": no_window_flag}
 
 
 def _raise_for_immediate_updater_failure(

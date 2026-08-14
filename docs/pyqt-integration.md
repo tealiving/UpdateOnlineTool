@@ -105,10 +105,10 @@ from update_online_tool.pyqt_runtime import (
 `launch_existing_pending()` 启动的命令形态：
 
 ```text
-<updater_executable> --pending <pending-update.json>
+<updater_executable> apply --pending <pending-update.json> --restart
 ```
 
-它本身不执行文件安装。
+该 helper 只负责按后台窗口合同启动 updater；安装、切换和重启仍由 updater runtime 执行。
 
 ## 通用项目示例
 
