@@ -513,6 +513,7 @@ def test_agent_launcher_terminates_waiting_agent_after_ready_timeout(
     assert status["phase"] == "failed"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="该真实 release 使用 POSIX shell 入口")
 def test_agent_performs_real_process_handoff_and_bootstrap_starts_new_release(
     tmp_path: Path,
 ) -> None:

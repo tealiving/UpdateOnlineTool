@@ -17,12 +17,31 @@ import update_online_tool.runtime as runtime
 from update_online_tool.errors import UpdateError, UpdateErrorCode
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.runtime import (
+    RuntimeStatus,
     apply_pending_update,
     install_prepared_package,
     rollback_installation,
     switch_installed_release,
 )
 from update_online_tool.signature import load_hmac_key, sign_manifest_payload
+
+
+def test_runtime_status_serializes_zero_duration_fields() -> None:
+    """亚毫秒阶段也必须保留稳定的耗时字段。
+
+    :return: None。
+    """
+
+    payload = RuntimeStatus(
+        phase="success",
+        percent=100,
+        message="installed",
+        version="1.1.0",
+        previous_version="1.0.0",
+    ).to_payload()
+
+    assert payload["phase_elapsed_ms"] == 0
+    assert payload["total_elapsed_ms"] == 0
 
 
 def test_install_prepared_package_installs_switches_and_writes_result(
@@ -303,6 +322,7 @@ def test_install_prepared_package_rejects_hash_mismatch(tmp_path: Path) -> None:
     assert error.value.code is UpdateErrorCode.PACKAGE_HASH_MISMATCH
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows 不提供 POSIX 可执行位语义")
 def test_install_prepared_package_preserves_zip_file_mode(tmp_path: Path) -> None:
     """验证 runtime 解压时保留 zip 中的可执行权限。"""
     install_root = _write_install_root(

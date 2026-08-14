@@ -119,7 +119,7 @@ manifest 采用 schema version 2，核心字段包括：
 └── update-result.json
 ```
 
-`current.json` 指向当前激活 release，并记录 `previous_version` 供回滚。`update.lock` 防止安装、切换和回滚并发执行。`update-status.json` 和 `update-result.json` 使用同目录临时文件原子替换，方便 GUI 轮询。
+`current.json` 指向当前激活 release，并记录 `previous_version` 供回滚。`update.lock` 防止安装、切换和回滚并发执行。`update-status.json` 和 `update-result.json` 使用同目录临时文件原子替换，方便 GUI 轮询。状态负载始终包含 `phase_elapsed_ms` 与 `total_elapsed_ms`；亚毫秒阶段写入 `0`，不得因平台计时粒度省略字段。
 
 ## 发布流程
 
