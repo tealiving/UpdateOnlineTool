@@ -20,6 +20,7 @@ from update_online_tool.versioning import UpdateDecision
 def _write_test_package(path: Path, content: bytes) -> bytes:
     """写入最小合法 release ZIP，并返回最终包字节。"""
     with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("MyTool.exe", "entry")
         archive.writestr("payload.bin", content)
     return path.read_bytes()
 
@@ -856,9 +857,10 @@ def test_service_launch_uses_standard_updater_sidecar_and_forwards_runtime_optio
     updater_path = install_root / "updater" / "MyToolUpdater.exe"
     updater_path.parent.mkdir(parents=True)
     updater_path.write_text("updater", encoding="utf-8")
-    package_path = tmp_path / "package.zip"
-    package_path.write_bytes(b"release")
     _write_manifest(tmp_path, version="1.0.8", content=b"release")
+    package_path = (
+        tmp_path / "automation-manual-studio" / "stable" / "v1.0.8" / "package.zip"
+    )
     manifest = UpdateService(UpdateToolSettings(nas_root=tmp_path)).get_remote_manifest(
         app_id="automation-manual-studio",
         version="1.0.8",
@@ -924,9 +926,10 @@ def test_service_launch_resolves_nested_updater_without_windows_suffix(
     nested_updater = install_root / "updater" / "MyToolUpdater" / "MyToolUpdater"
     nested_updater.parent.mkdir(parents=True)
     nested_updater.write_text("updater", encoding="utf-8")
-    package_path = tmp_path / "package.zip"
-    package_path.write_bytes(b"release")
     _write_manifest(tmp_path, version="1.0.8", content=b"release")
+    package_path = (
+        tmp_path / "automation-manual-studio" / "stable" / "v1.0.8" / "package.zip"
+    )
     manifest = UpdateService(UpdateToolSettings(nas_root=tmp_path)).get_remote_manifest(
         app_id="automation-manual-studio",
         version="1.0.8",

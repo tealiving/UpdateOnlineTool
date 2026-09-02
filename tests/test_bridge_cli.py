@@ -419,6 +419,7 @@ def _write_manifest(
     package.parent.mkdir(parents=True)
     with zipfile.ZipFile(package, "w") as archive:
         if members is None:
+            archive.writestr("MyTool.exe", "entry")
             archive.writestr("payload.bin", content)
         else:
             for name, member_content in members.items():

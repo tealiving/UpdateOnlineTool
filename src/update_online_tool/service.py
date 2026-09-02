@@ -17,6 +17,10 @@ from update_online_tool.install_root import normalize_install_root
 from update_online_tool.manifest import UpdateManifest
 from update_online_tool.nas import NasReleaseSource
 from update_online_tool.release_package import ReleasePackagePlan
+from update_online_tool.runtime import (
+    PreparedInstallPreflight,
+    preflight_prepared_package,
+)
 from update_online_tool.settings import UpdateToolSettings
 from update_online_tool.versioning import (
     UpdateDecision,
@@ -349,6 +353,12 @@ class UpdateService:
         from update_online_tool.launcher import StandaloneUpdaterLauncher
 
         root = normalize_install_root(Path(install_root))
+        preflight = self.preflight_install(
+            package_path=package_path,
+            manifest=manifest,
+            install_root=root,
+            restart_executable=restart_executable,
+        )
         pending_payload: dict[str, object] = {
             "package_path": str(package_path),
             "manifest": manifest.to_payload(),
@@ -358,6 +368,7 @@ class UpdateService:
             "force": bool(force),
             "restart": bool(restart),
             "wait_timeout": float(wait_timeout),
+            "operation_id": preflight.operation_id,
         }
         if signature_key is not None:
             pending_payload["signature_key"] = str(Path(signature_key))
@@ -368,6 +379,32 @@ class UpdateService:
         return StandaloneUpdaterLauncher(updater_executable).launch(
             pending_payload=pending_payload,
             pending_manifest_path=root / "pending-update.json",
+        )
+
+    def preflight_install(
+        self,
+        *,
+        package_path: Path,
+        manifest: UpdateManifest,
+        install_root: Path,
+        restart_executable: str,
+        operation_id: str = "",
+    ) -> PreparedInstallPreflight:
+        """在写 pending 或启动 updater 前验证目标安装计划。
+
+        :param package_path: 已下载并完成摘要校验的升级包。
+        :param manifest: 已验证的版本 manifest。
+        :param install_root: 目标安装根目录。
+        :param restart_executable: 安装后重启的 release 入口。
+        :param operation_id: 可选操作标识；用于复用同一临时目录计划。
+        :return: 未产生安装副作用的预检结果。
+        """
+        return preflight_prepared_package(
+            install_root=Path(install_root),
+            package_path=Path(package_path),
+            manifest=manifest,
+            entry_name=str(restart_executable or "").strip(),
+            operation_id=operation_id,
         )
 
     def _load_manifest(self, path: Path) -> UpdateManifest:

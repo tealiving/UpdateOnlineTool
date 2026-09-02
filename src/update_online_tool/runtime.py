@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -49,10 +50,15 @@ class RuntimeResult:
     restarted_pid: int | None = None
     elapsed_ms: int = 0
     phase_durations_ms: dict[str, int] = field(default_factory=dict)
+    operation_id: str = ""
+    error_code: str = ""
+    failure_phase: str = ""
+    completed_at: str = ""
 
     def to_payload(self) -> dict[str, object]:
         """转换为 update-result.json 负载。"""
         payload: dict[str, object] = {
+            "schema_version": 1,
             "success": self.success,
             "action": self.action,
             "version": self.version,
@@ -65,6 +71,14 @@ class RuntimeResult:
         payload["elapsed_ms"] = self.elapsed_ms
         if self.phase_durations_ms:
             payload["phase_durations_ms"] = dict(self.phase_durations_ms)
+        if self.operation_id:
+            payload["operation_id"] = self.operation_id
+        if self.error_code:
+            payload["error_code"] = self.error_code
+        if self.failure_phase:
+            payload["failure_phase"] = self.failure_phase
+        if self.completed_at:
+            payload["completed_at"] = self.completed_at
         return payload
 
 
@@ -83,6 +97,8 @@ class RuntimeStatus:
     phase_started_at: str = ""
     phase_elapsed_ms: int = 0
     total_elapsed_ms: int = 0
+    operation_id: str = ""
+    error_code: str = ""
 
     def to_payload(self) -> dict[str, object]:
         """转换为 update-status.json 负载。"""
@@ -104,7 +120,22 @@ class RuntimeStatus:
         payload["total_elapsed_ms"] = self.total_elapsed_ms
         if self.error:
             payload["error"] = self.error
+        if self.operation_id:
+            payload["operation_id"] = self.operation_id
+        if self.error_code:
+            payload["error_code"] = self.error_code
         return payload
+
+
+@dataclass(frozen=True)
+class PreparedInstallPreflight:
+    """已验证、尚未写入安装状态的安装预检结果。"""
+
+    operation_id: str
+    install_root: Path
+    temporary_release_dir: Path
+    target_release_dir: Path
+    entry_name: str
 
 
 class RuntimeStatusTracker:
@@ -121,9 +152,16 @@ class RuntimeStatusTracker:
         self.phase_started_at = self.started_at
         self.current_phase = ""
         self.phase_durations_ms: dict[str, int] = {}
+        self.operation_id = uuid4().hex
 
     def status(
-        self, *, phase: str, percent: int, message: str, error: str = ""
+        self,
+        *,
+        phase: str,
+        percent: int,
+        message: str,
+        error: str = "",
+        error_code: str = "",
     ) -> RuntimeStatus:
         """创建带耗时信息的阶段状态。"""
         now = time.monotonic()
@@ -147,6 +185,8 @@ class RuntimeStatusTracker:
             phase_started_at=self.phase_started_at,
             phase_elapsed_ms=int((now - self.phase_monotonic) * 1000),
             total_elapsed_ms=int((now - self.started_monotonic) * 1000),
+            operation_id=self.operation_id,
+            error_code=error_code,
         )
 
     def finish(self) -> tuple[int, dict[str, int]]:
@@ -174,6 +214,43 @@ class SidecarPromotion:
     touched_targets: list[Path]
 
 
+def preflight_prepared_package(
+    *,
+    install_root: Path,
+    package_path: Path,
+    manifest: UpdateManifest,
+    entry_name: str = "",
+    operation_id: str = "",
+) -> PreparedInstallPreflight:
+    """在写 pending 或启动 updater 前验证安装目标。"""
+    normalized_version = normalize_release_version(manifest.version)
+    if normalized_version != manifest.version:
+        manifest = replace(manifest, version=normalized_version)
+    root = normalize_install_root(Path(install_root))
+    resolved_operation_id = _normalize_operation_id(operation_id)
+    temporary_release_dir = _temporary_release_dir(
+        root=root,
+        version=manifest.version,
+        operation_id=resolved_operation_id,
+    )
+    resolved_entry_name = _resolve_entry_name(root, entry_name)
+    package_plan = ReleasePackagePlan.from_zip(
+        Path(package_path),
+        platform=manifest.platform,
+        extraction_root=temporary_release_dir,
+        expected_size=manifest.package.size,
+        expected_sha256=manifest.package.sha256,
+    )
+    package_plan.require_entry(resolved_entry_name)
+    return PreparedInstallPreflight(
+        operation_id=resolved_operation_id,
+        install_root=root,
+        temporary_release_dir=temporary_release_dir,
+        target_release_dir=root / "releases" / manifest.version,
+        entry_name=resolved_entry_name,
+    )
+
+
 def install_prepared_package(
     *,
     install_root: Path,
@@ -187,6 +264,7 @@ def install_prepared_package(
     wait_timeout: float = 60.0,
     restart: bool = False,
     release_required_paths: tuple[str, ...] | list[str] = (),
+    operation_id: str = "",
 ) -> RuntimeResult:
     """安装一个已准备好的升级包到 releases/<version>。
 
@@ -212,8 +290,11 @@ def install_prepared_package(
     previous_version = _current_version(root)
     releases_root = root / "releases"
     target_release_dir = releases_root / manifest.version
-    temp_release_dir = (
-        root / f".update-{manifest.version}.{os.getpid()}.{uuid4().hex}.tmp"
+    resolved_operation_id = _normalize_operation_id(operation_id)
+    temp_release_dir = _temporary_release_dir(
+        root=root,
+        version=manifest.version,
+        operation_id=resolved_operation_id,
     )
     release_backup_dir: Path | None = None
     target_release_replaced = False
@@ -224,6 +305,7 @@ def install_prepared_package(
         version=manifest.version,
         previous_version=previous_version,
     )
+    tracker.operation_id = resolved_operation_id
     try:
         if restart and not switch_current:
             raise UpdateError(
@@ -408,6 +490,8 @@ def install_prepared_package(
                         previous_version,
                         target_release_dir,
                         exc,
+                        operation_id=tracker.operation_id,
+                        failure_phase=tracker.current_phase,
                     ),
                 )
                 write_update_status(
@@ -417,6 +501,7 @@ def install_prepared_package(
                         percent=100,
                         message=str(exc),
                         error=str(exc),
+                        error_code=exc.code.value,
                     ),
                 )
             raise
@@ -432,6 +517,8 @@ def install_prepared_package(
                     previous_version,
                     target_release_dir,
                     wrapped,
+                    operation_id=tracker.operation_id,
+                    failure_phase=tracker.current_phase,
                 ),
             )
             write_update_status(
@@ -441,6 +528,7 @@ def install_prepared_package(
                     percent=100,
                     message=str(wrapped),
                     error=str(wrapped),
+                    error_code=wrapped.code.value,
                 ),
             )
         raise wrapped from exc
@@ -540,6 +628,8 @@ def apply_pending_payload(
                 parsed_old_pid = 0
             if parsed_old_pid > 0:
                 resolved_wait_pid = parsed_old_pid
+    raw_operation_id = payload.get("operation_id", "")
+    operation_id = raw_operation_id if isinstance(raw_operation_id, str) else ""
     return install_prepared_package(
         install_root=install_root,
         package_path=package_path,
@@ -552,6 +642,7 @@ def apply_pending_payload(
         wait_timeout=wait_timeout,
         restart=restart,
         release_required_paths=effective_required_paths,
+        operation_id=operation_id,
     )
 
 
@@ -670,6 +761,8 @@ def switch_installed_release(
                         previous_version,
                         target_release_dir,
                         exc,
+                        operation_id=tracker.operation_id,
+                        failure_phase=tracker.current_phase,
                     ),
                 )
                 write_update_status(
@@ -679,6 +772,7 @@ def switch_installed_release(
                         percent=100,
                         message=str(exc),
                         error=str(exc),
+                        error_code=exc.code.value,
                     ),
                 )
             raise
@@ -691,6 +785,8 @@ def switch_installed_release(
                 previous_version,
                 target_release_dir,
                 wrapped,
+                operation_id=tracker.operation_id,
+                failure_phase=tracker.current_phase,
             ),
         )
         write_update_status(
@@ -700,6 +796,7 @@ def switch_installed_release(
                 percent=100,
                 message=str(wrapped),
                 error=str(wrapped),
+                error_code=wrapped.code.value,
             ),
         )
         raise wrapped from exc
@@ -817,7 +914,13 @@ def rollback_installation(
             write_update_result(
                 root,
                 _failure_result(
-                    "rollback", previous_version, current_version, release_dir, exc
+                    "rollback",
+                    previous_version,
+                    current_version,
+                    release_dir,
+                    exc,
+                    operation_id=tracker.operation_id,
+                    failure_phase=tracker.current_phase,
                 ),
             )
             write_update_status(
@@ -827,6 +930,7 @@ def rollback_installation(
                     percent=100,
                     message=str(exc),
                     error=str(exc),
+                    error_code=exc.code.value,
                 ),
             )
         raise
@@ -990,7 +1094,10 @@ def _is_windows_process_alive(pid: int) -> bool:
 def write_update_result(install_root: Path, result: RuntimeResult) -> None:
     """写入 update-result.json。"""
     path = Path(install_root) / "update-result.json"
-    _write_json_atomic(path, result.to_payload())
+    finalized = result
+    if not finalized.completed_at:
+        finalized = replace(finalized, completed_at=_utc_now_iso())
+    _write_json_atomic(path, finalized.to_payload())
 
 
 def write_update_status(install_root: Path, status: RuntimeStatus) -> None:
@@ -1019,12 +1126,33 @@ def _utc_now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _normalize_operation_id(operation_id: str) -> str:
+    """返回仅由安全十六进制字符组成的操作标识。"""
+    normalized = str(operation_id or "").strip().lower()
+    if normalized:
+        if re.fullmatch(r"[0-9a-f]{32}", normalized) is None:
+            raise UpdateError(
+                UpdateErrorCode.MANIFEST_INVALID,
+                "operation_id must be a 32-character lowercase hexadecimal value",
+            )
+        return normalized
+    return uuid4().hex
+
+
+def _temporary_release_dir(*, root: Path, version: str, operation_id: str) -> Path:
+    """构造预检与 runtime 共用的临时 release 目录。"""
+    return root / f".update-{version}.{operation_id}.tmp"
+
+
 def _failure_result(
     action: str,
     version: str,
     previous_version: str,
     release_dir: Path,
     exc: UpdateError,
+    *,
+    operation_id: str = "",
+    failure_phase: str = "",
 ) -> RuntimeResult:
     """构造失败 update-result.json 结果。"""
     return RuntimeResult(
@@ -1034,6 +1162,10 @@ def _failure_result(
         previous_version=previous_version,
         release_dir=release_dir,
         message=str(exc),
+        operation_id=operation_id,
+        error_code=exc.code.value,
+        failure_phase=failure_phase,
+        completed_at=_utc_now_iso(),
     )
 
 

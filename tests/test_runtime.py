@@ -20,6 +20,7 @@ from update_online_tool.runtime import (
     RuntimeStatus,
     apply_pending_update,
     install_prepared_package,
+    preflight_prepared_package,
     rollback_installation,
     switch_installed_release,
 )
@@ -781,12 +782,68 @@ def test_install_prepared_package_writes_failure_result(tmp_path: Path) -> None:
     assert result_payload["action"] == "install_prepared"
     assert result_payload["version"] == "1.1.0"
     assert "release entry not found" in result_payload["message"]
+    assert result_payload["schema_version"] == 1
+    assert result_payload["error_code"] == UpdateErrorCode.SETTINGS_INVALID.value
+    assert result_payload["failure_phase"] == "verifying"
+    assert len(result_payload["operation_id"]) == 32
+    assert result_payload["completed_at"].endswith("Z")
     status_payload = json.loads(
         (install_root / "update-status.json").read_text(encoding="utf-8")
     )
     assert status_payload["phase"] == "failed"
     assert "release entry not found" in status_payload["message"]
+    assert status_payload["error_code"] == UpdateErrorCode.SETTINGS_INVALID.value
+    assert status_payload["operation_id"] == result_payload["operation_id"]
     assert not (install_root / "update.lock").exists()
+
+
+def test_preflight_and_install_reuse_operation_temporary_directory(
+    tmp_path: Path,
+) -> None:
+    """预检与安装必须使用同一个 operation_id 临时目录。"""
+    install_root = _write_install_root(
+        tmp_path, current_version="1.0.0", entry_name="MyTool.exe"
+    )
+    package_path = _write_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
+    manifest = _manifest(package_path, version="1.1.0")
+
+    preflight = preflight_prepared_package(
+        install_root=install_root,
+        package_path=package_path,
+        manifest=manifest,
+    )
+    result = install_prepared_package(
+        install_root=install_root,
+        package_path=package_path,
+        manifest=manifest,
+        operation_id=preflight.operation_id,
+    )
+
+    assert preflight.temporary_release_dir.name == (
+        f".update-1.1.0.{preflight.operation_id}.tmp"
+    )
+    assert result.success is True
+    assert not preflight.temporary_release_dir.exists()
+
+
+def test_preflight_rejects_windows_path_before_pending_or_extraction(
+    tmp_path: Path,
+) -> None:
+    """Windows 长路径预检必须在创建临时目录前 fail-closed。"""
+    package_path = _write_package(tmp_path / "package.zip", {"MyTool.exe": "new"})
+    manifest = replace(_manifest(package_path, version="1.1.0"), platform="windows")
+    long_root = Path("C:/") / ("r" * 250)
+
+    with pytest.raises(UpdateError) as error:
+        preflight_prepared_package(
+            install_root=long_root,
+            package_path=package_path,
+            manifest=manifest,
+            entry_name="MyTool.exe",
+        )
+
+    assert error.value.code is UpdateErrorCode.PACKAGE_PATH_TOO_LONG
+    assert not long_root.exists()
 
 
 def test_install_prepared_package_rejects_windows_style_path_traversal(

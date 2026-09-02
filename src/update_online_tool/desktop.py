@@ -210,12 +210,19 @@ class DesktopUpdateClient:
             progress=progress,
             cancellation_token=cancellation_token,
         )
+        preflight = self.service.preflight_install(
+            package_path=prepared.package_path,
+            manifest=manifest,
+            install_root=self.install_root(),
+            restart_executable=self._current_entry_name(),
+        )
         pending_payload = self._pending_payload(
             prepared=prepared,
             manifest=manifest,
             old_pid=old_pid,
             restart=restart,
             force=force,
+            operation_id=preflight.operation_id,
         )
         pending_path = StandaloneUpdaterLauncher(
             self._updater_executable(), popen=self._popen
@@ -386,6 +393,18 @@ class DesktopUpdateClient:
         """
         return self._read_json_state("update-result.json")
 
+    @staticmethod
+    def read_result_at(install_root: Path) -> dict[str, Any]:
+        """在不加载 settings 的情况下读取安装根结果。
+
+        :param install_root: 标准安装根或其 release 子目录。
+        :return: 结果字典；不存在时返回 exists=False。
+        """
+
+        return _read_json_state_at(
+            normalize_install_root(Path(install_root)), "update-result.json"
+        )
+
     def list_installed_versions(self) -> list[InstalledVersion]:
         """列出本地已安装版本。
 
@@ -510,6 +529,7 @@ class DesktopUpdateClient:
         old_pid: int | None,
         restart: bool,
         force: bool,
+        operation_id: str,
     ) -> dict[str, object]:
         """构建标准 pending-update.json 负载。
 
@@ -527,6 +547,7 @@ class DesktopUpdateClient:
             "restart_executable": self._current_entry_name(),
             "restart": bool(restart),
             "force": bool(force),
+            "operation_id": operation_id,
             "release_required_paths": list(
                 normalize_release_required_paths(self.config.release_required_paths)
             ),
@@ -556,13 +577,24 @@ class DesktopUpdateClient:
         :param filename: 安装根下的状态文件名。
         :return: 状态读取结果。
         """
-        path = self.install_root() / filename
-        if not path.is_file():
-            return {"exists": False}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            return {"exists": True, "error": str(exc)}
-        if not isinstance(payload, dict):
-            return {"exists": True, "error": "JSON root is not an object"}
-        return {"exists": True, "payload": payload}
+        return _read_json_state_at(self.install_root(), filename)
+
+
+def _read_json_state_at(install_root: Path, filename: str) -> dict[str, Any]:
+    """读取指定安装根下的状态 JSON。
+
+    :param install_root: 已规范化的安装根。
+    :param filename: 安装根下的状态文件名。
+    :return: 状态读取结果。
+    """
+
+    path = Path(install_root) / filename
+    if not path.is_file():
+        return {"exists": False}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"exists": True, "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"exists": True, "error": "JSON root is not an object"}
+    return {"exists": True, "payload": payload}

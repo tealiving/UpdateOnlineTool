@@ -50,6 +50,27 @@ def test_desktop_client_normalizes_release_dir_install_root(tmp_path: Path) -> N
     assert client.current_version() == "1.0.0"
 
 
+def test_read_result_at_does_not_require_settings(tmp_path: Path) -> None:
+    """静态结果读取不应因为缺 NAS settings 而阻断 GUI 启动。"""
+    install_root = _write_install_root(tmp_path, version="1.0.0")
+
+    missing = DesktopUpdateClient.read_result_at(install_root)
+    (install_root / "update-result.json").write_text(
+        json.dumps(
+            {
+                "success": False,
+                "operation_id": "operation-123",
+                "error_code": "PACKAGE_PATH_TOO_LONG",
+            }
+        ),
+        encoding="utf-8",
+    )
+    stored = DesktopUpdateClient.read_result_at(install_root / "releases" / "1.0.0")
+
+    assert missing == {"exists": False}
+    assert stored["payload"]["operation_id"] == "operation-123"
+
+
 def test_desktop_client_check_rejects_tampered_signed_manifest(tmp_path: Path) -> None:
     """验证桌面检查更新阶段也校验 manifest 签名。"""
     install_root = _write_install_root(tmp_path, version="1.0.0")
@@ -664,6 +685,7 @@ def _write_manifest(
     package.parent.mkdir(parents=True)
     channel_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("MyTool.exe", "entry")
         archive.writestr("payload.bin", content)
     package_bytes = package.read_bytes()
     payload = {

@@ -73,7 +73,10 @@ class PrepareUpdateWorker:
 - `检查更新` 按钮在轻量 worker 中调用 `UpdateService.check()`。
 - `立即更新` 按钮在可取消 worker 中调用 `UpdateService.prepare()`。
 - `prepare()` 完成后，GUI 调用启动 updater 的 SDK/API，然后退出应用。
-- GUI 展示 `UpdateError.code.value` 和 `UpdateError.message`，不要解析异常文本。
+- GUI 展示 `UpdateError.code.value` 和 `UpdateError.message`，不要解析异常文本。下载校验完成后应在
+  worker 中调用 UOT 的安装预检；预检失败时不得写 pending、启动 updater 或退出 GUI。新 GUI 读取
+  `read_result()` 时应消费结构化 `operation_id` / `error_code` / `failure_phase`，历史结果只能显示通用提示，
+  不得删除 UOT 结果文件。
 
 ## 新项目：Agent + Bootstrap 接入
 
